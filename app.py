@@ -532,13 +532,20 @@ if uploaded is not None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
-            st.subheader("Превью результата")
-            st.dataframe(
-                pd.read_parquet(PARQUET_PATH).head(20),
-                use_container_width=True,
+            st.subheader("Превью результата (первые 100 строк)")
+
+            preview_df = pd.read_parquet(PARQUET_PATH).head(100)
+            st.dataframe(preview_df, use_container_width=True)
+
+            # Выгрузка этих же 100 строк в Excel
+            preview_buffer = io.BytesIO()
+            with pd.ExcelWriter(preview_buffer, engine="openpyxl") as writer:
+                preview_df.to_excel(
+                    writer, index=False, sheet_name="Preview100"
+                )
+            st.download_button(
+                "Скачать эти 100 строк в Excel",
+                data=preview_buffer.getvalue(),
+                file_name="preview_100.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
