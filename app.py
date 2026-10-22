@@ -626,6 +626,9 @@ if "dataset" not in st.session_state:
         "file_hash": None,
     }
 
+if "report" not in st.session_state:
+    st.session_state.report = None
+
 if "aliases" not in st.session_state:
     st.session_state.aliases = {
         "zp": copy.deepcopy(DEFAULT_ZP_ALIASES),
@@ -662,6 +665,7 @@ with tab_upload:
 
     ok = False
     missing: list[str] = []
+    df_loaded = None
 
     if parquet_file is not None:
         file_bytes = parquet_file.getvalue()
@@ -680,25 +684,23 @@ with tab_upload:
                     f"Parquet прочитан: {len(df_loaded):,} строк, "
                     f"{len(df_loaded.columns)} колонок"
                 )
-                file_hash = hash(file_bytes)
-                if st.session_state.dataset.get("file_hash") != file_hash:
-                    st.session_state.dataset["df"] = df_loaded
-                    st.session_state.dataset["loaded_at"] = datetime.now()
-                    st.session_state.dataset["file_hash"] = file_hash
-                    st.session_state.dataset["metrics"] = None
 
     if st.button(
-        "Рассчитать",
+        "Загрузить",
         type="primary",
         disabled=not ok,
     ):
-        st.session_state.dataset["metrics"] = compute_metrics(
-            st.session_state.dataset["df"]
+        # Кнопка только загружает датасет в session_state.
+        # Никакого расчёта — расчёт на вкладке «Отчеты».
+        st.session_state.dataset["df"] = df_loaded
+        st.session_state.dataset["loaded_at"] = datetime.now()
+        st.session_state.dataset["file_hash"] = hash(
+            parquet_file.getvalue()
         )
-        st.info(
-            "Расчёт выполнен (заглушка). "
-            "Методология будет добавлена позже."
-        )
+        st.session_state.dataset["metrics"] = None
+        # Сбрасываем результаты отчётов: датасет новый
+        st.session_state.report = None
+        st.success("Датасет загружен. Перейдите на вкладку «Отчеты».")
 
 
 # ---------------------------------------------------------------
@@ -926,14 +928,48 @@ with tab_reports:
                     )
 
                     st.markdown("### 📊 Ключевые показатели")
+                    report_key = (client, from_label, to_label)
 
-                    if df_client_period.empty:
+                    if st.button("Рассчитать", type="primary"):
+                        if df_client_period.empty:
+                            st.session_state.report = {
+                                "key": report_key,
+                                "empty": True,
+                                "kpi": None,
+                                "table": None,
+                            }
+                        else:
+                            kpi = compute_kpi(df_client_period)
+                            months = _months_in_period(
+                                year_from, month_from,
+                                year_to, month_to,
+                            )
+                            table = compute_monthly_table(
+                                df_client_period, months
+                            )
+                            st.session_state.report = {
+                                "key": report_key,
+                                "empty": False,
+                                "kpi": kpi,
+                                "table": table,
+                            }
+
+                    report = st.session_state.report
+                    if report is None or report["key"] != report_key:
+                        st.info(
+                            "Нажмите «Рассчитать», чтобы построить отчёт."
+                        )
+                    elif report["empty"]:
+                        st.markdown("### 📊 Ключевые показатели")
                         st.info(
                             "Нет данных по выбранному клиенту "
                             "за выбранный период."
                         )
                     else:
-                        kpi = compute_kpi(df_client_period)
+                        kpi = report["kpi"]
+                        table = report["table"]
+
+                        st.markdown("### 📊 Ключевые показатели")
                         k1, k2, k3, k4, k5 = st.columns(5)
                         k1.metric(
                             "📊 План проекта, шт",
@@ -954,14 +990,6 @@ with tab_reports:
                         k5.metric(
                             "📋 Кол-во анкет на 1 RS, шт.",
                             f"{kpi['ankets_per_rs']:.1f}",
-                        )
-
-                        months = _months_in_period(
-                            year_from, month_from,
-                            year_to, month_to,
-                        )
-                        table = compute_monthly_table(
-                            df_client_period, months
                         )
 
                         st.markdown(
