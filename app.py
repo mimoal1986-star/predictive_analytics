@@ -993,7 +993,7 @@ with tab_reports:
                                 x=alt.X(
                                     "Месяц:N",
                                     sort=None,
-                                    scale=alt.Scale(paddingInner=0.5, paddingOuter=0.5),
+                                    scale=alt.Scale(paddingInner=0.2, paddingOuter=0.5),
                                     axis=alt.Axis(
                                         labelAngle=0,
                                         labelFont=font,
