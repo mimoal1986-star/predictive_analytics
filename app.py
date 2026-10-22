@@ -21,7 +21,7 @@ ZP_COLUMN_ALIASES = {
     "Клиент": ["ClientName"],
     "Регион short": [
         "RegionName", "Re", "Регион", "RegionName Чек",
-        "Re Чеккер", "РЕГИОН",
+        "Re Чеккер", "РЕГИОН", "регион"
     ],
     "RS": ["Тайный покупатель Fullname", "RS"],
     "RS ID": ["Тайный покупатель ID"],
