@@ -383,9 +383,19 @@ def convert_excel_to_parquet(
     gc.collect()
 
     combined = combined[FINAL_COLUMNS]
+    
+    # Приводим все текстовые колонки к StringDtype:
+    # защита от смешанных str/int в исходных данных
+    text_cols = [
+        c for c in FINAL_COLUMNS
+        if c not in ("Год", "Месяц", "Дата визита", "RS ID")
+    ]
+    for col in text_cols:
+        combined[col] = combined[col].astype("string")
+    
     combined["Год"] = combined["Год"].astype("int16")
     combined["Месяц"] = combined["Месяц"].astype("int8")
-
+    
     for col in CATEGORICAL_COLUMNS:
         combined[col] = combined[col].astype("category")
 
