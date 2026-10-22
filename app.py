@@ -702,7 +702,7 @@ with tab_reports:
     # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОТЧЁТОВ
     # -----------------------------------------------------------
     def _month_label(year: int, month: int) -> str:
-        return f"{month}_{year}"
+        return f"{month}_{year % 100:02d}"
 
     def compute_kpi(df_client_all: pd.DataFrame) -> dict:
         plan = len(df_client_all)
@@ -734,16 +734,23 @@ with tab_reports:
                 (df_client_all["Год"] == y)
                 & (df_client_all["Месяц"] == m)
             ]
-            plan = len(sub)
-            fact = int((sub["Тип файла"] == "ЗП").sum())
-            pf = (fact / plan * 100) if plan > 0 else 0.0
-            rs_unique = sub["RS"].dropna().nunique()
-            ankets = (fact / rs_unique) if rs_unique > 0 else 0.0
-            rows["План проекта, шт"].append(plan)
-            rows["Факт проекта, шт"].append(fact)
-            rows["ПФ клиент, %"].append(pf)
-            rows["Кол-во RS, чел."].append(rs_unique)
-            rows["Кол-во анкет на 1 RS, шт."].append(ankets)
+            if sub.empty:
+                rows["План проекта, шт"].append(None)
+                rows["Факт проекта, шт"].append(None)
+                rows["ПФ клиент, %"].append(None)
+                rows["Кол-во RS, чел."].append(None)
+                rows["Кол-во анкет на 1 RS, шт."].append(None)
+            else:
+                plan = len(sub)
+                fact = int((sub["Тип файла"] == "ЗП").sum())
+                pf = (fact / plan * 100) if plan > 0 else 0.0
+                rs_unique = sub["RS"].dropna().nunique()
+                ankets = (fact / rs_unique) if rs_unique > 0 else 0.0
+                rows["План проекта, шт"].append(plan)
+                rows["Факт проекта, шт"].append(fact)
+                rows["ПФ клиент, %"].append(round(pf))
+                rows["Кол-во RS, чел."].append(rs_unique)
+                rows["Кол-во анкет на 1 RS, шт."].append(round(ankets))
 
         columns = [
             _month_label(y, m) for y, m in reversed(months)
@@ -799,16 +806,29 @@ with tab_reports:
                     else:
                         kpi = compute_kpi(df_client_all)
 
-                        pairs = (
-                            df_client_all[["Год", "Месяц"]]
-                            .dropna()
-                            .drop_duplicates()
-                            .sort_values(["Год", "Месяц"])
-                            .itertuples(index=False, name=None)
+                        pairs = sorted(
+                            set(
+                                (int(y), int(m))
+                                for y, m in df_client_all[
+                                    ["Год", "Месяц"]
+                                ]
+                                .dropna()
+                                .itertuples(index=False, name=None)
+                            )
                         )
-                        months = [
-                            (int(y), int(m)) for y, m in pairs
-                        ]
+                        if pairs:
+                            y_min, m_min = pairs[0]
+                            y_max, m_max = pairs[-1]
+                            months = []
+                            y, m = y_min, m_min
+                            while (y, m) <= (y_max, m_max):
+                                months.append((y, m))
+                                if m == 12:
+                                    y, m = y + 1, 1
+                                else:
+                                    m += 1
+                        else:
+                            months = []
 
                         table = compute_monthly_table(
                             df_client_all, months
