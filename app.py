@@ -228,11 +228,13 @@ def parse_dates_vectorized(series: pd.Series, sheet_year: int) -> pd.Series:
     # 3. Остаток → медленный парсер
     unresolved = result.isna() & series.notna()
     if unresolved.any():
-        result.loc[unresolved] = series[unresolved].apply(
+        extra = series[unresolved].apply(
             lambda v: parse_visit_date(v, sheet_year=sheet_year)
         )
+        result.loc[unresolved] = pd.to_datetime(extra, errors="coerce")
 
-    return result
+    # Гарантируем datetime64[ns] на выходе
+    return pd.to_datetime(result, errors="coerce")
 
 
 # ---------------------------------------------------------------
@@ -295,6 +297,10 @@ def _parse_sheet(
     crit_id = df["CritID"] if "CritID" in df.columns else None
 
     out["Дата визита"] = parse_dates_vectorized(out["Дата визита"], sheet_year)
+    out["Дата визита"] = pd.to_datetime(
+        parse_dates_vectorized(out["Дата визита"], sheet_year),
+        errors="coerce",
+    )
     out["Дата визита"] = out["Дата визита"].dt.normalize()
 
     bad_mask = out["Дата визита"].isna()
