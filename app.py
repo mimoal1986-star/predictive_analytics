@@ -819,13 +819,8 @@ with tab_reports:
                 "«Загрузка данных»."
             )
         else:
-            clients = (
-                df_dataset["Клиент"]
-                .dropna()
-                .astype(str)
-                .sort_values()
-                .unique()
-                .tolist()
+            clients = sorted(
+                df_dataset["Клиент"].dropna().unique().tolist()
             )
 
             today = datetime.now()
