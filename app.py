@@ -287,6 +287,7 @@ def _parse_sheet(
     xls: pd.ExcelFile,
     sheet_name: str,
     sheet_year: int,
+    sheet_month: int,
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     try:
         df = xls.parse(sheet_name)
@@ -328,10 +329,18 @@ def _parse_sheet(
     )
     out["Дата визита"] = out["Дата визита"].dt.normalize()
 
+    # Битые даты запоминаем ДО подстановки — для отчёта
     bad_mask = out["Дата визита"].isna()
+
+    # Подставляем 1-е число месяца вкладки для ВСЕХ NaT,
+    # чтобы колонка была заполнена всегда
+    fallback_date = pd.Timestamp(year=sheet_year, month=sheet_month, day=1)
+    out.loc[bad_mask, "Дата визита"] = fallback_date
+
     good_rows = out[~bad_mask]
     bad_rows = out[bad_mask]
 
+    # Отчёт только если колонка даты была в исходнике
     bad_report = None
     if "Дата визита" in mapping and not bad_rows.empty:
         bad_report = pd.DataFrame({
@@ -387,7 +396,7 @@ def convert_excel_to_parquet(
             continue
 
         year, month = ym
-        good, bad = _parse_sheet(xls, sheet_name, year)
+        good, bad = _parse_sheet(xls, sheet_name, year, month)
 
         if good is None:
             skipped_sheets.append(sheet_name)
