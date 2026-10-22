@@ -817,6 +817,15 @@ with tab_reports:
     # -----------------------------------------------------------
     with rep_clients:
         df_dataset = st.session_state.dataset.get("df")
+        if df_dataset is not None:
+            st.write(
+                "DEBUG Год/Месяц (первые 10):",
+                df_dataset[["Год", "Месяц"]].head(10).to_dict("records"),
+            )
+            st.write(
+                "DEBUG dtypes:",
+                df_dataset[["Год", "Месяц"]].dtypes.to_dict(),
+            )
 
         if df_dataset is None:
             st.info(
