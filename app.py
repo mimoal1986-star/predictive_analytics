@@ -988,10 +988,12 @@ with tab_reports:
                             bars = alt.Chart(chart_data).mark_bar(
                                 cornerRadiusTopLeft=2,
                                 cornerRadiusTopRight=2,
+                                size=40 # Фиксированная ширина столбца
                             ).encode(
                                 x=alt.X(
                                     "Месяц:N",
                                     sort=None,
+                                    scale=alt.Scale(paddingInner=0.5, paddingOuter=0.5),
                                     axis=alt.Axis(
                                         labelAngle=0,
                                         labelFont=font,
@@ -1024,6 +1026,9 @@ with tab_reports:
                                 text=alt.Text("Value:Q", format="d")
                             )
 
+                            # Считаем ширину: 40px на столбец + 40px на отступы + 60px на ось Y
+                            calc_width = len(chart_data) * 80 + 60
+
                             chart = (bars + text).properties(
                                 title=alt.TitleParams(
                                     text=title,
@@ -1032,13 +1037,15 @@ with tab_reports:
                                     anchor="start",
                                 ),
                                 height=400,
+                                width=calc_width # Применяем ширину
                             ).configure_view(
                                 strokeWidth=0
                             ).configure_axis(
                                 grid=False
                             )
 
-                            st.altair_chart(chart, use_container_width=True)
+                            # Отключаем растягивание на всю ширину
+                            st.altair_chart(chart, use_container_width=False)
 
                     def get_quantile_colors(series, top_is_violet=True):
                         """
