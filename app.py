@@ -311,7 +311,6 @@ def _parse_sheet(
     df.columns = [str(c).strip() for c in df.columns]
 
     mapping = _resolve_columns(df, aliases)
-    # Колонки, которые не ищем (пустой список алиасов), не считаем отсутствующими
     missing = [
         t for t in aliases
         if t not in mapping and aliases[t]
@@ -325,7 +324,6 @@ def _parse_sheet(
         ]
         st.warning("\n".join(lines))
 
-    # Собираем итоговый DataFrame
     out = pd.DataFrame(index=df.index)
     for target, names in aliases.items():
         if target in mapping:
@@ -340,8 +338,14 @@ def _parse_sheet(
     )
     crit_id = df["CritID"] if "CritID" in df.columns else None
 
-    # Если колонки даты нет вообще — сразу ставим fallback для всех
-    if "Дата визита" not in mapping:
+    # Дата визита: fallback 01.MM.YYYY только для ЗП.
+    # Для Хвостов дата всегда пустая (NaT), fallback не применяем.
+    is_zp = file_type == "ЗП"
+
+    if not is_zp:
+        out["Дата визита"] = pd.NaT
+        bad_mask = pd.Series(False, index=df.index)
+    elif "Дата визита" not in mapping:
         out["Дата визита"] = pd.Timestamp(
             year=sheet_year, month=sheet_month, day=1
         )
@@ -361,7 +365,6 @@ def _parse_sheet(
     good_rows = out[~bad_mask]
     bad_rows = out[bad_mask]
 
-    # Отчёт только если колонка даты была в исходнике и есть битые
     bad_report = None
     if "Дата визита" in mapping and not bad_rows.empty:
         bad_report = pd.DataFrame({
@@ -411,7 +414,9 @@ def process_file(
     file_type: str,
     parse_name,
     progress_callback=None,
-) -> tuple[list[pd.DataFrame], list[pd.DataFrame], list[str], int, int]:
+) -> tuple[
+    list[pd.DataFrame], list[pd.DataFrame], list[str], int, int, list[str]
+]:
     xls = _open_excel(excel_path)
     sheet_names = xls.sheet_names
     if not sheet_names:
@@ -420,6 +425,7 @@ def process_file(
     frames: list[pd.DataFrame] = []
     error_frames: list[pd.DataFrame] = []
     skipped: list[str] = []
+    used_sheet_names: list[str] = []
     total = len(sheet_names)
     used = 0
 
@@ -441,6 +447,7 @@ def process_file(
             continue
 
         used += 1
+        used_sheet_names.append(sheet_name)
 
         if not good.empty:
             good = good.copy()
@@ -459,7 +466,7 @@ def process_file(
         del good, bad
         gc.collect()
 
-    return frames, error_frames, skipped, total, used
+    return frames, error_frames, skipped, total, used, used_sheet_names
 
 
 # ---------------------------------------------------------------
@@ -476,9 +483,10 @@ def convert_to_parquet(
     all_skipped: list[str] = []
     total_sheets = 0
     used_sheets = 0
+    hvosty_excluded_names: list[str] = []
 
     if zp_path:
-        frames, errors, skipped, total, used = process_file(
+        frames, errors, skipped, total, used, _ = process_file(
             zp_path, ZP_COLUMN_ALIASES, "ЗП",
             _parse_sheet_name_zp, progress_callback,
         )
@@ -489,7 +497,7 @@ def convert_to_parquet(
         used_sheets += used
 
     if hvosty_path:
-        frames, errors, skipped, total, used = process_file(
+        frames, errors, skipped, total, used, used_names = process_file(
             hvosty_path, HVOSTY_COLUMN_ALIASES, "Хвосты",
             _parse_sheet_name_hvosty, progress_callback,
         )
@@ -498,6 +506,14 @@ def convert_to_parquet(
         all_skipped.extend(skipped)
         total_sheets += total
         used_sheets += used
+
+        # Исключённые = все вкладки Хвостов минус использованные
+        hvosty_xls = _open_excel(hvosty_path)
+        all_hvosty_names = hvosty_xls.sheet_names
+        used_set = set(used_names)
+        hvosty_excluded_names = [
+            n for n in all_hvosty_names if n not in used_set
+        ]
 
     if not all_frames:
         raise ValueError(
@@ -543,6 +559,7 @@ def convert_to_parquet(
         "parquet_size_mb": parquet_path.stat().st_size / (1024 * 1024),
         "bad_dates": len(error_report) if error_report is not None else 0,
         "error_report": error_report,
+        "hvosty_excluded_names": hvosty_excluded_names,
     }
     return stats
 
@@ -642,6 +659,24 @@ if st.button("Конвертировать в Parquet", type="primary"):
                     "Скачать Excel с ошибками дат",
                     data=buffer.getvalue(),
                     file_name="bad_dates.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+            if stats["hvosty_excluded_names"]:
+                excluded_df = pd.DataFrame({
+                    "Вкладки Хвост исключены": stats["hvosty_excluded_names"],
+                })
+                excluded_buffer = io.BytesIO()
+                with pd.ExcelWriter(
+                    excluded_buffer, engine="openpyxl"
+                ) as writer:
+                    excluded_df.to_excel(
+                        writer, index=False, sheet_name="Excluded"
+                    )
+                st.download_button(
+                    "Скачать Excel с исключёнными вкладками Хвостов",
+                    data=excluded_buffer.getvalue(),
+                    file_name="hvosty_excluded.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
