@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import altair as alt
 import streamlit as st
 
 # ===============================================================
@@ -950,6 +951,90 @@ with tab_reports:
                             "officedocument.spreadsheetml.sheet"
                         ),
                     )
+
+                    st.markdown("### 📊 Графики")
+
+                    pf_series = table.loc["ПФ клиент, %"]
+
+                    chart_data = pd.DataFrame({
+                        "Месяц": pf_series.index,
+                        "ПФ": pf_series.values,
+                    })
+                    chart_data = chart_data.dropna()
+
+                    if not chart_data.empty:
+                        chart_data["ПФ"] = chart_data["ПФ"].astype(int)
+                        chart_data = chart_data.iloc[::-1].reset_index(drop=True)
+
+                        def get_color(val):
+                            if val == 100:
+                                return "#6A1B9A"
+                            elif val < 80:
+                                return "#F50057"
+                            else:
+                                return "#757575"
+
+                        chart_data["Цвет"] = chart_data["ПФ"].apply(get_color)
+
+                        font = (
+                            "Inter, -apple-system, BlinkMacSystemFont, "
+                            "'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+                        )
+
+                        bars = alt.Chart(chart_data).mark_bar(
+                            cornerRadiusTopLeft=2,
+                            cornerRadiusTopRight=2,
+                        ).encode(
+                            x=alt.X(
+                                "Месяц:N",
+                                sort=None,
+                                axis=alt.Axis(
+                                    labelAngle=0,
+                                    labelFont=font,
+                                    title=None,
+                                ),
+                            ),
+                            y=alt.Y(
+                                "ПФ:Q",
+                                scale=alt.Scale(domain=[0, 120]),
+                                axis=alt.Axis(
+                                    format="d",
+                                    title="ПФ клиент, %",
+                                    labelFont=font,
+                                    titleFont=font,
+                                ),
+                            ),
+                            color=alt.Color(
+                                "Цвет:N", scale=None, legend=None
+                            ),
+                        )
+
+                        text = bars.mark_text(
+                            align="center",
+                            baseline="bottom",
+                            dy=-5,
+                            font=font,
+                            fontSize=12,
+                            color="#333333",
+                        ).encode(
+                            text=alt.Text("ПФ:Q", format="d")
+                        )
+
+                        chart = (bars + text).properties(
+                            title=alt.TitleParams(
+                                text="ПФ клиент, %",
+                                font=font,
+                                fontSize=16,
+                                anchor="middle",
+                            ),
+                            height=400,
+                        ).configure_view(
+                            strokeWidth=0
+                        )
+
+                        st.altair_chart(
+                            chart, use_container_width=True
+                        )
 
     # -----------------------------------------------------------
     # ПОДВКЛАДКА «РЕГИОНЫ» (заглушка)
