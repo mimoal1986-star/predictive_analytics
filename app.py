@@ -469,7 +469,7 @@ def convert_excel_to_parquet(
 # Streamlit UI
 # ---------------------------------------------------------------
 st.set_page_config(page_title="Excel → Parquet", layout="wide")
-st.title("Загрузка Excel и конвертация в Parquet")
+st.title("ЗП Загрузка Excel и конвертация в Parquet")
 
 uploaded = st.file_uploader(
     "Загрузите Excel-файл (вкладки в формате ММГГ)",
