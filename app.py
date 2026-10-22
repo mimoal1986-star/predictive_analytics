@@ -1,23 +1,26 @@
 import gc
+import io
 import os
+import re
 import tempfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 # ---------------------------------------------------------------
-# Константы
+# Алиасы колонок: для каждой целевой — список возможных исходных
 # ---------------------------------------------------------------
-COLUMN_RENAME = {
-    "ACC": "ASM",
-    "FinishTime": "Дата визита",
-    "SetName": "Волна",
-    "SetCode": "Код проекта",
-    "ClientName": "Клиент",
-    "RegionName": "Регион short",
-    "Тайный покупатель Fullname": "RS",
-    "Тайный покупатель ID": "RS ID",
+COLUMN_ALIASES = {
+    "ASM": ["ACC", "АСС", "ASM"],
+    "Дата визита": ["FinishTime"],
+    "Волна": ["SetName"],
+    "Код проекта": ["SetCode"],
+    "Клиент": ["ClientName"],
+    "Регион short": ["RegionName", "Re", "Регион", "RegionName Чек"],
+    "RS": ["Тайный покупатель Fullname"],
+    "RS ID": ["Тайный покупатель ID"],
 }
 
 FINAL_COLUMNS = [
@@ -38,6 +41,152 @@ CATEGORICAL_COLUMNS = ["ASM", "Волна", "Код проекта", "Клиен
 PARQUET_PATH = Path("data/report_data.parquet")
 PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# ---------------------------------------------------------------
+# Парсер дат
+# ---------------------------------------------------------------
+EXCEL_EPOCH = datetime(1899, 12, 30)
+
+RU_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
+
+EN_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10,
+    "november": 11, "december": 12,
+}
+
+SERIAL_MIN = 1
+SERIAL_MAX = 100_000
+
+
+def _safe_ts(year: int, month: int, day: int) -> pd.Timestamp | None:
+    try:
+        return pd.Timestamp(year=year, month=month, day=day)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _resolve_year(yy: int) -> int:
+    return 2000 + yy if yy < 70 else 1900 + yy
+
+
+def _from_serial(num: float) -> pd.Timestamp | None:
+    if not (SERIAL_MIN <= num <= SERIAL_MAX):
+        return None
+    try:
+        return pd.Timestamp(EXCEL_EPOCH + timedelta(days=float(num)))
+    except (OverflowError, ValueError):
+        return None
+
+
+def parse_visit_date(raw_value, sheet_year: int | None = None) -> pd.Timestamp | None:
+    """
+    Парсит дату визита. Формат ММДДГГГГ исключён: день всегда первым.
+    sheet_year — год из имени вкладки, fallback, если в значении года нет.
+    """
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, float) and pd.isna(raw_value):
+        return None
+    if isinstance(raw_value, str) and not raw_value.strip():
+        return None
+
+    if isinstance(raw_value, (pd.Timestamp, datetime, date)):
+        return pd.Timestamp(raw_value)
+
+    if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+        return _from_serial(float(raw_value))
+
+    text = str(raw_value).strip()
+
+    # Слитная цифровая запись
+    if text.isdigit():
+        if len(text) == 8:
+            dd, mm, yyyy = int(text[:2]), int(text[2:4]), int(text[4:])
+            ts = _safe_ts(yyyy, mm, dd)
+            if ts is not None:
+                return ts
+            yyyy, mm, dd = int(text[:4]), int(text[4:6]), int(text[6:])
+            return _safe_ts(yyyy, mm, dd)
+        if len(text) == 6:
+            dd, mm, yy = int(text[:2]), int(text[2:4]), int(text[4:])
+            return _safe_ts(_resolve_year(yy), mm, dd)
+        return _from_serial(float(text))
+
+    # ISO: yyyy-mm-dd
+    m = re.fullmatch(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", text)
+    if m:
+        return _safe_ts(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    # dd.mm.yyyy / dd.mm.yy
+    m = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})", text)
+    if m:
+        dd, mm, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        year = yy if yy >= 100 else _resolve_year(yy)
+        return _safe_ts(year, mm, dd)
+
+    # dd.mm без года
+    m = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})", text)
+    if m:
+        if sheet_year is None:
+            return None
+        return _safe_ts(sheet_year, int(m.group(2)), int(m.group(1)))
+
+    # Русский текст: 13 августа 2026 / 13 августа
+    m = re.fullmatch(r"(\d{1,2})\s+([а-яё]+)(?:\s+(\d{2,4}))?", text.lower())
+    if m:
+        dd = int(m.group(1))
+        mm = RU_MONTHS.get(m.group(2))
+        if mm is None:
+            return None
+        if m.group(3):
+            yy = int(m.group(3))
+            year = yy if yy >= 100 else _resolve_year(yy)
+        elif sheet_year is not None:
+            year = sheet_year
+        else:
+            return None
+        return _safe_ts(year, mm, dd)
+
+    # Английский текст: 13 Aug 2026 / 13-Aug-26
+    m = re.fullmatch(r"(\d{1,2})[\s-]+([a-z]+)\.?[\s-]*(\d{2,4})?", text.lower())
+    if m:
+        dd = int(m.group(1))
+        mm = EN_MONTHS.get(m.group(2).rstrip("."))
+        if mm is None:
+            return None
+        if m.group(3):
+            yy = int(m.group(3))
+            year = yy if yy >= 100 else _resolve_year(yy)
+        elif sheet_year is not None:
+            year = sheet_year
+        else:
+            return None
+        return _safe_ts(year, mm, dd)
+
+    # Английский текст: Aug 13, 2026
+    m = re.fullmatch(r"([a-z]+)\.?[\s-]+(\d{1,2})(?:,?[\s-]+(\d{2,4}))?", text.lower())
+    if m:
+        mm = EN_MONTHS.get(m.group(1).rstrip("."))
+        if mm is None:
+            return None
+        dd = int(m.group(2))
+        if m.group(3):
+            yy = int(m.group(3))
+            year = yy if yy >= 100 else _resolve_year(yy)
+        elif sheet_year is not None:
+            year = sheet_year
+        else:
+            return None
+        return _safe_ts(year, mm, dd)
+
+    return None
+
 
 # ---------------------------------------------------------------
 # Чтение Excel
@@ -49,28 +198,68 @@ def _open_excel(path: str) -> pd.ExcelFile:
         return pd.ExcelFile(path, engine="openpyxl")
 
 
-def _parse_sheet(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame | None:
+def _resolve_columns(df: pd.DataFrame) -> dict[str, str]:
+    mapping = {}
+    for target, aliases in COLUMN_ALIASES.items():
+        for alias in aliases:
+            if alias in df.columns:
+                mapping[target] = alias
+                break
+    return mapping
+
+
+def _parse_sheet(
+    xls: pd.ExcelFile,
+    sheet_name: str,
+    sheet_year: int,
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """
+    Возвращает (good, bad). good — строки с распознанной датой,
+    bad — с нераспознанной (для отчёта).
+    """
     try:
         df = xls.parse(sheet_name)
     except Exception as e:
         st.warning(f"Лист «{sheet_name}» не прочитан: {e}")
-        return None
+        return None, None
 
     df.columns = [str(c).strip() for c in df.columns]
 
-    # FIX 1.3: сообщаем о дубликатах нужных колонок (pandas делает ACC.1)
-    dupes = [c for c in COLUMN_RENAME if f"{c}.1" in df.columns]
-    if dupes:
-        st.warning(
-            f"Лист «{sheet_name}»: дубликаты колонок {dupes} — взята первая"
-        )
-
-    missing = [c for c in COLUMN_RENAME if c not in df.columns]
+    mapping = _resolve_columns(df)
+    missing = [t for t in COLUMN_ALIASES if t not in mapping]
     if missing:
         st.warning(f"Лист «{sheet_name}» пропущен: нет колонок {missing}")
-        return None
+        return None, None
 
-    return df[list(COLUMN_RENAME.keys())].rename(columns=COLUMN_RENAME)
+    # Оригинальный FinishTime и CritID — до переименования
+    raw_finish = df[mapping["Дата визита"]].copy()
+    crit_id = df["CritID"].copy() if "CritID" in df.columns else pd.Series([None] * len(df))
+
+    # Переименовываем нужные колонки
+    df = df[[mapping[t] for t in COLUMN_ALIASES]].copy()
+    df.columns = list(COLUMN_ALIASES.keys())
+
+    # Парсим даты с учётом года вкладки
+    parsed = df["Дата визита"].apply(
+        lambda v: parse_visit_date(v, sheet_year=sheet_year)
+    )
+    df["Дата визита"] = parsed
+
+    bad_mask = df["Дата визита"].isna()
+    good_rows = df[~bad_mask].copy()
+    bad_rows = df[bad_mask].copy()
+
+    # Отчёт по плохим датам
+    if not bad_rows.empty:
+        bad_report = pd.DataFrame({
+            "Вкладка": sheet_name,
+            "FinishTime (оригинал)": raw_finish.loc[bad_rows.index].values,
+            "CritID": crit_id.loc[bad_rows.index].values,
+        })
+    else:
+        bad_report = None
+
+    return good_rows, bad_report
 
 
 def _parse_sheet_name(sheet_name: str) -> tuple[int, int] | None:
@@ -95,11 +284,11 @@ def convert_excel_to_parquet(
     xls = _open_excel(excel_path)
     sheet_names = xls.sheet_names
 
-    # FIX 1.6: защита от пустого Excel
     if not sheet_names:
         raise ValueError("В файле нет вкладок")
 
     frames: list[pd.DataFrame] = []
+    error_frames: list[pd.DataFrame] = []
     skipped_sheets: list[str] = []
     total = len(sheet_names)
 
@@ -113,18 +302,23 @@ def convert_excel_to_parquet(
             continue
 
         year, month = ym
-        df = _parse_sheet(xls, sheet_name)
-        if df is None:
+        good, bad = _parse_sheet(xls, sheet_name, year)
+
+        if good is None:
             skipped_sheets.append(sheet_name)
             continue
 
-        # FIX 1.2: не падаем, если Год/Месяц уже есть в исходных данных
-        df = df.drop(columns=[c for c in ("Год", "Месяц") if c in df.columns])
-        df.insert(0, "Год", year)
-        df.insert(1, "Месяц", month)
+        # Год/Месяц
+        if not good.empty:
+            good.drop(columns=[c for c in ("Год", "Месяц") if c in good.columns], inplace=True)
+            good.insert(0, "Год", year)
+            good.insert(1, "Месяц", month)
+            frames.append(good)
 
-        frames.append(df)
-        del df
+        if bad is not None and not bad.empty:
+            error_frames.append(bad)
+
+        del good, bad
         gc.collect()
 
     if not frames:
@@ -138,23 +332,12 @@ def convert_excel_to_parquet(
     gc.collect()
 
     combined = combined[FINAL_COLUMNS]
-
     combined["Год"] = combined["Год"].astype("int16")
     combined["Месяц"] = combined["Месяц"].astype("int8")
 
     for col in CATEGORICAL_COLUMNS:
         combined[col] = combined[col].astype("category")
 
-    # FIX 1.4: сообщаем о нераспознанных датах
-    dates = pd.to_datetime(
-        combined["Дата визита"], dayfirst=True, errors="coerce"
-    )
-    bad_dates = dates.isna() & combined["Дата визита"].notna()
-    if bad_dates.any():
-        st.warning(f"Дата визита: {bad_dates.sum()} значений не распознаны")
-    combined["Дата визита"] = dates
-
-    # FIX 1.1: безопасное приведение RS ID к Int64
     rs_id = pd.to_numeric(combined["RS ID"], errors="coerce")
     bad_rs = rs_id.notna() & (rs_id % 1 != 0)
     if bad_rs.any():
@@ -163,12 +346,16 @@ def convert_excel_to_parquet(
 
     combined.to_parquet(parquet_path, index=False, compression="zstd")
 
+    error_report = pd.concat(error_frames, ignore_index=True) if error_frames else None
+
     stats = {
         "rows": len(combined),
         "columns": len(combined.columns),
         "sheets_used": total - len(skipped_sheets),
         "skipped": skipped_sheets,
         "parquet_size_mb": parquet_path.stat().st_size / (1024 * 1024),
+        "bad_dates": len(error_report) if error_report is not None else 0,
+        "error_report": error_report,
     }
     return stats
 
@@ -211,22 +398,34 @@ if uploaded is not None:
             col1, col2, col3 = st.columns(3)
             col1.metric("Строк", f"{stats['rows']:,}")
             col2.metric("Колонок", stats["columns"])
-            col3.metric(
-                "Размер Parquet, МБ", f"{stats['parquet_size_mb']:.2f}"
-            )
+            col3.metric("Размер Parquet, МБ", f"{stats['parquet_size_mb']:.2f}")
 
             if stats["skipped"]:
-                st.warning(
-                    "Пропущенные вкладки: " + ", ".join(stats["skipped"])
-                )
+                st.warning("Пропущенные вкладки: " + ", ".join(stats["skipped"]))
 
-            # FIX 1.5: читаем байты, не держим открытый файл
             st.download_button(
                 "Скачать Parquet",
                 data=PARQUET_PATH.read_bytes(),
                 file_name="report_data.parquet",
                 mime="application/octet-stream",
             )
+
+            if stats["bad_dates"] > 0:
+                st.warning(
+                    f"Не распознано дат визита: {stats['bad_dates']}. "
+                    "Скачайте отчёт ниже."
+                )
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                    stats["error_report"].to_excel(
+                        writer, index=False, sheet_name="BadDates"
+                    )
+                st.download_button(
+                    "Скачать Excel с ошибками дат",
+                    data=buffer.getvalue(),
+                    file_name="bad_dates.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 
             st.subheader("Превью результата")
             st.dataframe(
