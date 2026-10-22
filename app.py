@@ -29,8 +29,6 @@ ZP_COLUMN_ALIASES = {
 
 # ---------------------------------------------------------------
 # Алиасы для файла Хвосты
-# Дата визита, RS, RS ID — не ищем, создаём пустыми.
-# «Проекты» — только Клиент, никогда не Волна.
 # ---------------------------------------------------------------
 HVOSTY_COLUMN_ALIASES = {
     "ASM": ZP_COLUMN_ALIASES["ASM"],
@@ -43,7 +41,6 @@ HVOSTY_COLUMN_ALIASES = {
     "RS ID": [],
 }
 
-# Человекочитаемые названия для сообщений
 TARGET_LABELS = {
     "ASM": "АСМ",
     "Дата визита": "Дата визита",
@@ -55,7 +52,6 @@ TARGET_LABELS = {
     "RS ID": "RS ID",
 }
 
-# Итоговый порядок колонок в объединённом Parquet
 FINAL_COLUMNS = [
     "Тип файла",
     "Год",
@@ -304,8 +300,7 @@ def _parse_sheet(
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     try:
         df = xls.parse(sheet_name)
-    except Exception as e:
-        st.warning(f"[{file_type}] Лист «{sheet_name}» не прочитан: {e}")
+    except Exception:
         return None, None
 
     df.columns = [str(c).strip() for c in df.columns]
@@ -315,7 +310,6 @@ def _parse_sheet(
         t for t in aliases
         if t not in mapping and aliases[t]
     ]
-
     if missing:
         lines = [
             f"[{file_type}] Лист «{sheet_name}» "
@@ -325,7 +319,7 @@ def _parse_sheet(
         st.warning("\n".join(lines))
 
     out = pd.DataFrame(index=df.index)
-    for target, names in aliases.items():
+    for target in aliases:
         if target in mapping:
             out[target] = df[mapping[target]]
         else:
@@ -338,8 +332,6 @@ def _parse_sheet(
     )
     crit_id = df["CritID"] if "CritID" in df.columns else None
 
-    # Дата визита: fallback 01.MM.YYYY только для ЗП.
-    # Для Хвостов дата всегда пустая (NaT), fallback не применяем.
     is_zp = file_type == "ЗП"
 
     if not is_zp:
@@ -382,7 +374,6 @@ def _parse_sheet(
 
 
 def _parse_sheet_name_zp(sheet_name: str) -> tuple[int, int] | None:
-    """ЗП: ММГГ, например 0125."""
     name = sheet_name.strip()
     if len(name) != 4 or not name.isdigit():
         return None
@@ -394,7 +385,6 @@ def _parse_sheet_name_zp(sheet_name: str) -> tuple[int, int] | None:
 
 
 def _parse_sheet_name_hvosty(sheet_name: str) -> tuple[int, int] | None:
-    """Хвосты: 'Хвосты 09.2026'."""
     m = re.fullmatch(r"Хвосты\s+(\d{2})\.(\d{4})", sheet_name.strip())
     if not m:
         return None
@@ -415,7 +405,8 @@ def process_file(
     parse_name,
     progress_callback=None,
 ) -> tuple[
-    list[pd.DataFrame], list[pd.DataFrame], list[str], int, int, list[str]
+    list[pd.DataFrame], list[pd.DataFrame], list[str], int, int,
+    list[str], list[str],
 ]:
     xls = _open_excel(excel_path)
     sheet_names = xls.sheet_names
@@ -466,7 +457,10 @@ def process_file(
         del good, bad
         gc.collect()
 
-    return frames, error_frames, skipped, total, used, used_sheet_names
+    return (
+        frames, error_frames, skipped, total, used,
+        used_sheet_names, sheet_names,
+    )
 
 
 # ---------------------------------------------------------------
@@ -484,9 +478,10 @@ def convert_to_parquet(
     total_sheets = 0
     used_sheets = 0
     hvosty_excluded_names: list[str] = []
+    hvosty_included_names: list[str] = []
 
     if zp_path:
-        frames, errors, skipped, total, used, _ = process_file(
+        frames, errors, skipped, total, used, _, _ = process_file(
             zp_path, ZP_COLUMN_ALIASES, "ЗП",
             _parse_sheet_name_zp, progress_callback,
         )
@@ -497,7 +492,10 @@ def convert_to_parquet(
         used_sheets += used
 
     if hvosty_path:
-        frames, errors, skipped, total, used, used_names = process_file(
+        (
+            frames, errors, skipped, total, used,
+            used_names, hvosty_sheet_names,
+        ) = process_file(
             hvosty_path, HVOSTY_COLUMN_ALIASES, "Хвосты",
             _parse_sheet_name_hvosty, progress_callback,
         )
@@ -507,12 +505,10 @@ def convert_to_parquet(
         total_sheets += total
         used_sheets += used
 
-        # Исключённые = все вкладки Хвостов минус использованные
-        hvosty_xls = _open_excel(hvosty_path)
-        all_hvosty_names = hvosty_xls.sheet_names
+        hvosty_included_names = list(used_names)
         used_set = set(used_names)
         hvosty_excluded_names = [
-            n for n in all_hvosty_names if n not in used_set
+            n for n in hvosty_sheet_names if n not in used_set
         ]
 
     if not all_frames:
@@ -560,15 +556,24 @@ def convert_to_parquet(
         "bad_dates": len(error_report) if error_report is not None else 0,
         "error_report": error_report,
         "hvosty_excluded_names": hvosty_excluded_names,
+        "hvosty_included_names": hvosty_included_names,
     }
     return stats
 
 
 # ---------------------------------------------------------------
-# Streamlit UI
+# Streamlit UI (session_state)
 # ---------------------------------------------------------------
 st.set_page_config(page_title="Excel → Parquet (ЗП + Хвосты)", layout="wide")
 st.title("Загрузка Excel (ЗП + Хвосты) и конвертация в Parquet")
+
+for key in [
+    "zp_bytes", "hvosty_bytes",
+    "stats", "parquet_bytes", "bad_dates_bytes",
+    "sheets_bytes", "preview_bytes", "preview_df",
+]:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
 zp_file = st.file_uploader(
     "Файл ЗП (вкладки в формате ММГГ, например 0125)",
@@ -581,8 +586,16 @@ hvosty_file = st.file_uploader(
     key="hvosty",
 )
 
+if zp_file is not None:
+    st.session_state.zp_bytes = zp_file.getvalue()
+if hvosty_file is not None:
+    st.session_state.hvosty_bytes = hvosty_file.getvalue()
+
 if st.button("Конвертировать в Parquet", type="primary"):
-    if zp_file is None and hvosty_file is None:
+    if (
+        st.session_state.zp_bytes is None
+        and st.session_state.hvosty_bytes is None
+    ):
         st.error("Загрузите хотя бы один файл: ЗП или Хвосты.")
     else:
         zp_path = None
@@ -590,19 +603,19 @@ if st.button("Конвертировать в Parquet", type="primary"):
         tmp_paths: list[str] = []
 
         try:
-            if zp_file is not None:
+            if st.session_state.zp_bytes is not None:
                 with tempfile.NamedTemporaryFile(
                     delete=False, suffix=".xlsx"
                 ) as tmp:
-                    tmp.write(zp_file.getvalue())
+                    tmp.write(st.session_state.zp_bytes)
                     zp_path = tmp.name
                     tmp_paths.append(zp_path)
 
-            if hvosty_file is not None:
+            if st.session_state.hvosty_bytes is not None:
                 with tempfile.NamedTemporaryFile(
                     delete=False, suffix=".xlsx"
                 ) as tmp:
-                    tmp.write(hvosty_file.getvalue())
+                    tmp.write(st.session_state.hvosty_bytes)
                     hvosty_path = tmp.name
                     tmp_paths.append(hvosty_path)
 
@@ -614,94 +627,133 @@ if st.button("Конвертировать в Parquet", type="primary"):
                     text=f"[{file_type}] {i}/{total}: {sheet_name}",
                 )
 
-            with st.spinner("Конвертирую…"):
-                stats = convert_to_parquet(
-                    zp_path, hvosty_path, PARQUET_PATH,
-                    progress_callback=_cb,
-                )
+            try:
+                with st.spinner("Конвертирую…"):
+                    stats = convert_to_parquet(
+                        zp_path, hvosty_path, PARQUET_PATH,
+                        progress_callback=_cb,
+                    )
+            except ValueError as e:
+                progress.empty()
+                st.error(f"Конвертация не удалась: {e}")
+                st.stop()
             progress.empty()
 
-            st.success("Готово!")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Строк", f"{stats['rows']:,}")
-            col2.metric(
-                "Вкладок обработано",
-                f"{stats['sheets_used']} / {stats['sheets_total']}",
-            )
-            col3.metric(
-                "Размер Parquet, МБ",
-                f"{stats['parquet_size_mb']:.2f}",
-            )
-
-            if stats["skipped"]:
-                st.warning(
-                    "Пропущенные вкладки: " + ", ".join(stats["skipped"])
-                )
-
-            st.download_button(
-                "Скачать Parquet",
-                data=PARQUET_PATH.read_bytes(),
-                file_name="report_data.parquet",
-                mime="application/octet-stream",
-            )
+            st.session_state.stats = stats
+            st.session_state.parquet_bytes = PARQUET_PATH.read_bytes()
 
             if stats["bad_dates"] > 0:
-                st.warning(
-                    f"Не распознано дат визита: {stats['bad_dates']}. "
-                    "Скачайте отчёт ниже."
-                )
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                     stats["error_report"].to_excel(
                         writer, index=False, sheet_name="BadDates"
                     )
-                st.download_button(
-                    "Скачать Excel с ошибками дат",
-                    data=buffer.getvalue(),
-                    file_name="bad_dates.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+                st.session_state.bad_dates_bytes = buffer.getvalue()
+            else:
+                st.session_state.bad_dates_bytes = None
 
-            if stats["hvosty_excluded_names"]:
-                excluded_df = pd.DataFrame({
-                    "Вкладки Хвост исключены": stats["hvosty_excluded_names"],
-                })
-                excluded_buffer = io.BytesIO()
+            if (
+                stats["hvosty_included_names"]
+                or stats["hvosty_excluded_names"]
+            ):
+                sheets_buffer = io.BytesIO()
                 with pd.ExcelWriter(
-                    excluded_buffer, engine="openpyxl"
+                    sheets_buffer, engine="openpyxl"
                 ) as writer:
-                    excluded_df.to_excel(
-                        writer, index=False, sheet_name="Excluded"
-                    )
-                st.download_button(
-                    "Скачать Excel с исключёнными вкладками Хвостов",
-                    data=excluded_buffer.getvalue(),
-                    file_name="hvosty_excluded.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+                    if stats["hvosty_included_names"]:
+                        pd.DataFrame({
+                            "Хвосты добавлены":
+                                stats["hvosty_included_names"],
+                        }).to_excel(
+                            writer, index=False, sheet_name="Included"
+                        )
+                    if stats["hvosty_excluded_names"]:
+                        pd.DataFrame({
+                            "Вкладки Хвост исключены":
+                                stats["hvosty_excluded_names"],
+                        }).to_excel(
+                            writer, index=False, sheet_name="Excluded"
+                        )
+                st.session_state.sheets_bytes = sheets_buffer.getvalue()
+            else:
+                st.session_state.sheets_bytes = None
 
-            st.subheader("Превью: 50 строк ЗП + 50 строк Хвосты")
             full_df = pd.read_parquet(PARQUET_PATH)
             zp_preview = full_df[full_df["Тип файла"] == "ЗП"].head(50)
             hv_preview = full_df[full_df["Тип файла"] == "Хвосты"].head(50)
-            preview_df = pd.concat([zp_preview, hv_preview], ignore_index=True)
-
-            st.dataframe(preview_df, use_container_width=True)
+            preview_df = pd.concat(
+                [zp_preview, hv_preview], ignore_index=True
+            )
+            st.session_state.preview_df = preview_df
 
             preview_buffer = io.BytesIO()
-            with pd.ExcelWriter(preview_buffer, engine="openpyxl") as writer:
+            with pd.ExcelWriter(
+                preview_buffer, engine="openpyxl"
+            ) as writer:
                 preview_df.to_excel(
                     writer, index=False, sheet_name="Preview100"
                 )
-            st.download_button(
-                "Скачать превью 100 строк (50 ЗП + 50 Хвосты) в Excel",
-                data=preview_buffer.getvalue(),
-                file_name="preview_100.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            st.session_state.preview_bytes = preview_buffer.getvalue()
+
         finally:
             for p in tmp_paths:
                 try:
                     os.unlink(p)
                 except OSError:
                     pass
+
+if st.session_state.stats is not None:
+    stats = st.session_state.stats
+
+    st.success("Готово!")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Строк", f"{stats['rows']:,}")
+    col2.metric(
+        "Вкладок обработано",
+        f"{stats['sheets_used']} / {stats['sheets_total']}",
+    )
+    col3.metric(
+        "Размер Parquet, МБ",
+        f"{stats['parquet_size_mb']:.2f}",
+    )
+
+    if st.session_state.parquet_bytes:
+        st.download_button(
+            "Скачать Parquet",
+            data=st.session_state.parquet_bytes,
+            file_name="report_data.parquet",
+            mime="application/octet-stream",
+        )
+
+    if st.session_state.bad_dates_bytes:
+        st.warning(
+            f"Не распознано дат визита: {stats['bad_dates']}. "
+            "Скачайте отчёт ниже."
+        )
+        st.download_button(
+            "Скачать Excel с ошибками дат",
+            data=st.session_state.bad_dates_bytes,
+            file_name="bad_dates.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    if st.session_state.sheets_bytes:
+        st.download_button(
+            "Скачать Excel со списком вкладок Хвостов (Included/Excluded)",
+            data=st.session_state.sheets_bytes,
+            file_name="hvosty_sheets.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    if st.session_state.preview_df is not None:
+        st.subheader("Превью: 50 строк ЗП + 50 строк Хвосты")
+        st.dataframe(
+            st.session_state.preview_df,
+            use_container_width=True,
+        )
+        st.download_button(
+            "Скачать превью 100 строк (50 ЗП + 50 Хвосты) в Excel",
+            data=st.session_state.preview_bytes,
+            file_name="preview_100.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
