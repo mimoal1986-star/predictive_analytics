@@ -932,6 +932,25 @@ with tab_reports:
                         ),
                     )
 
+                    dataset_buffer = io.BytesIO()
+                    with pd.ExcelWriter(
+                        dataset_buffer, engine="openpyxl"
+                    ) as writer:
+                        df_client_all.to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Датасет",
+                        )
+                    st.download_button(
+                        "📥 Выгрузить датасет",
+                        data=dataset_buffer.getvalue(),
+                        file_name=f"dataset_{client}.xlsx",
+                        mime=(
+                            "application/vnd.openxmlformats-"
+                            "officedocument.spreadsheetml.sheet"
+                        ),
+                    )
+
     # -----------------------------------------------------------
     # ПОДВКЛАДКА «РЕГИОНЫ» (заглушка)
     # -----------------------------------------------------------
