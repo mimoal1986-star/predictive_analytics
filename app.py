@@ -65,7 +65,7 @@ def compute_metrics(df: pd.DataFrame, **params) -> dict:
 
 
 # ===============================================================
-# АЛИАСЫ КОЛОНОК — в session_state, чтобы потом редактировать
+# АЛИАСЫ КОЛОНОК
 # ===============================================================
 DEFAULT_ZP_ALIASES = {
     "ASM": ["ACC", "АСС", "ASM", "АСМ"],
@@ -424,7 +424,6 @@ def _parse_sheet_name_hvosty(sheet_name: str) -> tuple[int, int] | None:
     year = int(m.group(2))
     if not (1 <= month <= 12):
         return None
-    # Ограничение: Хвосты только с мая 2024 включительно
     if (year, month) < (2024, 5):
         return None
     return year, month
@@ -640,7 +639,7 @@ if "aliases" not in st.session_state:
 st.set_page_config(page_title="Аналитика визитов", layout="wide")
 st.title("Аналитика визитов")
 
-tab_upload, tab_client, tab_settings = st.tabs(
+tab_upload, tab_reports, tab_settings = st.tabs(
     ["Загрузка данных", "Отчеты", "Настройки проекта"]
 )
 
@@ -703,27 +702,314 @@ with tab_upload:
 
 
 # ---------------------------------------------------------------
-# ВКЛАДКА «КЛИЕНТ»
+# ВКЛАДКА «ОТЧЕТЫ»
 # ---------------------------------------------------------------
-with tab_client:
+with tab_reports:
     st.header("Отчеты")
 
-    df_dataset = st.session_state.dataset.get("df")
-    if df_dataset is None:
-        st.info(
-            "Сначала загрузите Parquet на вкладке «Загрузка данных»."
-        )
-    else:
-        loaded_at = st.session_state.dataset.get("loaded_at")
-        st.caption(
-            f"Загружено: {loaded_at:%Y-%m-%d %H:%M:%S} | "
-            f"строк: {len(df_dataset):,}"
-        )
-        st.info(
-            "Методология отчётов будет добавлена позже. "
-            "Ниже — превью загруженного датасета."
-        )
-        st.dataframe(df_dataset.head(20), use_container_width=True)
+    rep_clients, rep_regions, rep_dsm, rep_summary = st.tabs(
+        ["Клиенты", "Регионы", "DSM", "Сводный"]
+    )
+
+    # -----------------------------------------------------------
+    # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОТЧЁТОВ
+    # -----------------------------------------------------------
+    def _month_label(year: int, month: int) -> str:
+        return f"{month:02d}.{year % 100:02d}"
+
+    def _parse_month_label(label: str) -> tuple[int, int] | None:
+        m = re.fullmatch(r"(\d{2})\.(\d{2})", label.strip())
+        if not m:
+            return None
+        month = int(m.group(1))
+        year = 2000 + int(m.group(2))
+        if not (1 <= month <= 12):
+            return None
+        return year, month
+
+    def _df_for_client(
+        df: pd.DataFrame, client: str
+    ) -> pd.DataFrame:
+        return df[df["Клиент"] == client]
+
+    def _df_for_period(
+        df: pd.DataFrame,
+        year_from: int, month_from: int,
+        year_to: int, month_to: int,
+    ) -> pd.DataFrame:
+        start = year_from * 100 + month_from
+        end = year_to * 100 + month_to
+        ym = df["Год"] * 100 + df["Месяц"]
+        return df[(ym >= start) & (ym <= end)]
+
+    def _months_in_period(
+        year_from: int, month_from: int,
+        year_to: int, month_to: int,
+    ) -> list[tuple[int, int]]:
+        months = []
+        y, m = year_from, month_from
+        while (y, m) <= (year_to, month_to):
+            months.append((y, m))
+            if m == 12:
+                y, m = y + 1, 1
+            else:
+                m += 1
+        return months
+
+    def compute_kpi(df_client_period: pd.DataFrame) -> dict:
+        plan = len(df_client_period)
+        fact = int((df_client_period["Тип файла"] == "ЗП").sum())
+        pf_percent = (fact / plan * 100) if plan > 0 else 0.0
+        rs_unique = df_client_period["RS"].dropna().nunique()
+        ankets_per_rs = (fact / rs_unique) if rs_unique > 0 else 0.0
+        return {
+            "plan": plan,
+            "fact": fact,
+            "pf_percent": pf_percent,
+            "rs_count": rs_unique,
+            "ankets_per_rs": ankets_per_rs,
+        }
+
+    def compute_monthly_table(
+        df_client_period: pd.DataFrame,
+        months: list[tuple[int, int]],
+    ) -> pd.DataFrame:
+        rows = {
+            "План проекта, шт": [],
+            "Факт проекта, шт": [],
+            "ПФ клиент, %": [],
+            "Кол-во RS, чел.": [],
+            "Кол-во анкет на 1 RS, шт.": [],
+        }
+        for y, m in reversed(months):
+            sub = df_client_period[
+                (df_client_period["Год"] == y)
+                & (df_client_period["Месяц"] == m)
+            ]
+            plan = len(sub)
+            fact = int((sub["Тип файла"] == "ЗП").sum())
+            pf = (fact / plan * 100) if plan > 0 else 0.0
+            rs_unique = sub["RS"].dropna().nunique()
+            ankets = (fact / rs_unique) if rs_unique > 0 else 0.0
+            label = _month_label(y, m)
+            rows["План проекта, шт"].append(plan)
+            rows["Факт проекта, шт"].append(fact)
+            rows["ПФ клиент, %"].append(pf)
+            rows["Кол-во RS, чел."].append(rs_unique)
+            rows["Кол-во анкет на 1 RS, шт."].append(ankets)
+
+        columns = [
+            _month_label(y, m) for y, m in reversed(months)
+        ]
+        table = pd.DataFrame(rows, index=columns).T
+        table.index.name = "Метрика"
+        return table
+
+    # -----------------------------------------------------------
+    # ПОДВКЛАДКА «КЛИЕНТЫ»
+    # -----------------------------------------------------------
+    with rep_clients:
+        df_dataset = st.session_state.dataset.get("df")
+
+        if df_dataset is None:
+            st.info(
+                "Сначала загрузите Parquet на вкладке "
+                "«Загрузка данных»."
+            )
+        else:
+            clients = (
+                df_dataset["Клиент"]
+                .dropna()
+                .astype(str)
+                .sort_values()
+                .unique()
+                .tolist()
+            )
+
+            today = datetime.now()
+            prev_month = today.month - 1
+            prev_year = today.year
+            if prev_month == 0:
+                prev_month = 12
+                prev_year -= 1
+
+            start_ym = 2024 * 100 + 5
+            end_ym_calendar = prev_year * 100 + prev_month
+
+            ym_series = (
+                df_dataset["Год"] * 100 + df_dataset["Месяц"]
+            ).dropna().astype(int)
+            if len(ym_series) > 0:
+                end_ym_dataset = int(ym_series.max())
+            else:
+                end_ym_dataset = start_ym
+
+            end_ym = max(end_ym_calendar, end_ym_dataset)
+
+            month_labels: list[str] = []
+            y, m = start_ym // 100, start_ym % 100
+            while (y * 100 + m) <= end_ym:
+                month_labels.append(_month_label(y, m))
+                if m == 12:
+                    y, m = y + 1, 1
+                else:
+                    m += 1
+
+            if not clients:
+                st.warning("В датасете нет клиентов.")
+            elif not month_labels:
+                st.warning("Не удалось построить список месяцев.")
+            else:
+                default_from_label = _month_label(2024, 5)
+                default_to_label = _month_label(prev_year, prev_month)
+                if default_to_label not in month_labels:
+                    default_to_label = month_labels[-1]
+                if default_from_label not in month_labels:
+                    default_from_label = month_labels[0]
+
+                idx_from = month_labels.index(default_from_label)
+                idx_to = month_labels.index(default_to_label)
+
+                col_from, col_to, col_client = st.columns(3)
+
+                with col_from:
+                    from_label = st.selectbox(
+                        "С месяца",
+                        options=month_labels,
+                        index=idx_from,
+                        key="rep_clients_from",
+                    )
+
+                with col_to:
+                    to_label = st.selectbox(
+                        "По месяц",
+                        options=month_labels,
+                        index=idx_to,
+                        key="rep_clients_to",
+                    )
+
+                with col_client:
+                    client = st.selectbox(
+                        "Клиент",
+                        options=clients,
+                        key="rep_clients_client",
+                    )
+
+                from_ym = None
+                to_ym = None
+                fm = _parse_month_label(from_label)
+                if fm:
+                    from_ym = fm[0] * 100 + fm[1]
+                tm = _parse_month_label(to_label)
+                if tm:
+                    to_ym = tm[0] * 100 + tm[1]
+
+                if from_ym is None or to_ym is None:
+                    st.error("Не удалось разобрать период.")
+                elif from_ym > to_ym:
+                    st.error(
+                        "Начало периода позже конца. "
+                        "Поменяйте местами."
+                    )
+                else:
+                    year_from, month_from = (
+                        from_ym // 100, from_ym % 100
+                    )
+                    year_to, month_to = (
+                        to_ym // 100, to_ym % 100
+                    )
+
+                    df_client_period = _df_for_period(
+                        _df_for_client(df_dataset, client),
+                        year_from, month_from,
+                        year_to, month_to,
+                    )
+
+                    st.markdown("### 📊 Ключевые показатели")
+
+                    if df_client_period.empty:
+                        st.info(
+                            "Нет данных по выбранному клиенту "
+                            "за выбранный период."
+                        )
+                    else:
+                        kpi = compute_kpi(df_client_period)
+                        k1, k2, k3, k4, k5 = st.columns(5)
+                        k1.metric(
+                            "📊 План проекта, шт",
+                            f"{kpi['plan']:,}",
+                        )
+                        k2.metric(
+                            "✅ Факт проекта, шт",
+                            f"{kpi['fact']:,}",
+                        )
+                        k3.metric(
+                            "🎯 ПФ клиент, %",
+                            f"{kpi['pf_percent']:.1f}%",
+                        )
+                        k4.metric(
+                            "👥 Кол-во RS, чел.",
+                            f"{kpi['rs_count']:,}",
+                        )
+                        k5.metric(
+                            "📋 Кол-во анкет на 1 RS, шт.",
+                            f"{kpi['ankets_per_rs']:.1f}",
+                        )
+
+                        months = _months_in_period(
+                            year_from, month_from,
+                            year_to, month_to,
+                        )
+                        table = compute_monthly_table(
+                            df_client_period, months
+                        )
+
+                        st.markdown(
+                            "### 📈 Ключевые показатели по месяцам"
+                        )
+                        st.dataframe(
+                            table,
+                            use_container_width=True,
+                        )
+
+                        excel_buffer = io.BytesIO()
+                        with pd.ExcelWriter(
+                            excel_buffer, engine="openpyxl"
+                        ) as writer:
+                            table.to_excel(
+                                writer,
+                                sheet_name="Ключевые показатели",
+                            )
+                        st.download_button(
+                            "📥 Выгрузить в Excel",
+                            data=excel_buffer.getvalue(),
+                            file_name=(
+                                f"kpi_{client}_{from_label}_"
+                                f"{to_label}.xlsx"
+                            ),
+                            mime=(
+                                "application/vnd.openxmlformats-"
+                                "officedocument.spreadsheetml.sheet"
+                            ),
+                        )
+
+    # -----------------------------------------------------------
+    # ПОДВКЛАДКА «РЕГИОНЫ» (заглушка)
+    # -----------------------------------------------------------
+    with rep_regions:
+        st.info("В разработке.")
+
+    # -----------------------------------------------------------
+    # ПОДВКЛАДКА «DSM» (заглушка)
+    # -----------------------------------------------------------
+    with rep_dsm:
+        st.info("В разработке.")
+
+    # -----------------------------------------------------------
+    # ПОДВКЛАДКА «СВОДНЫЙ» (заглушка)
+    # -----------------------------------------------------------
+    with rep_summary:
+        st.info("В разработке.")
 
 
 # ---------------------------------------------------------------
