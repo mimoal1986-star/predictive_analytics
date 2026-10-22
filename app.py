@@ -704,18 +704,51 @@ with tab_reports:
     def _month_label(year: int, month: int) -> str:
         return f"{month}_{year % 100:02d}"
 
-    def compute_kpi(df_client_all: pd.DataFrame) -> dict:
-        plan = len(df_client_all)
-        fact = int((df_client_all["Тип файла"] == "ЗП").sum())
-        pf_percent = (fact / plan * 100) if plan > 0 else 0.0
-        rs_unique = df_client_all["RS"].dropna().nunique()
-        ankets_per_rs = (fact / rs_unique) if rs_unique > 0 else 0.0
+    def compute_kpi(
+        df_client_all: pd.DataFrame,
+        months: list[tuple[int, int]],
+    ) -> dict:
+        plans = []
+        facts = []
+        rs_counts = []
+
+        for y, m in months:
+            sub = df_client_all[
+                (df_client_all["Год"] == y)
+                & (df_client_all["Месяц"] == m)
+            ]
+            if sub.empty:
+                continue
+            plans.append(len(sub))
+            facts.append(int((sub["Тип файла"] == "ЗП").sum()))
+            rs_counts.append(sub["RS"].dropna().nunique())
+
+        n = len(plans)
+        if n == 0:
+            return {
+                "plan_avg": 0,
+                "fact_avg": 0,
+                "pf_percent": 0,
+                "rs_count_avg": 0,
+                "ankets_per_rs": 0,
+            }
+
+        plan_avg = round(sum(plans) / n)
+        fact_avg = round(sum(facts) / n)
+        rs_avg = round(sum(rs_counts) / n)
+        pf_percent = (
+            round(fact_avg / plan_avg * 100) if plan_avg > 0 else 0
+        )
+        ankets = (
+            round(fact_avg / rs_avg) if rs_avg > 0 else 0
+        )
+
         return {
-            "plan": plan,
-            "fact": fact,
+            "plan_avg": plan_avg,
+            "fact_avg": fact_avg,
             "pf_percent": pf_percent,
-            "rs_count": rs_unique,
-            "ankets_per_rs": ankets_per_rs,
+            "rs_count_avg": rs_avg,
+            "ankets_per_rs": ankets,
         }
 
     def compute_monthly_table(
@@ -804,8 +837,6 @@ with tab_reports:
                             "table": None,
                         }
                     else:
-                        kpi = compute_kpi(df_client_all)
-
                         pairs = sorted(
                             set(
                                 (int(y), int(m))
@@ -830,6 +861,8 @@ with tab_reports:
                         else:
                             months = []
 
+                        kpi = compute_kpi(df_client_all, months)
+
                         table = compute_monthly_table(
                             df_client_all, months
                         )
@@ -853,24 +886,24 @@ with tab_reports:
 
                     k1, k2, k3, k4, k5 = st.columns(5)
                     k1.metric(
-                        "📊 План проекта, шт",
-                        f"{kpi['plan']:,}",
+                        "📊 План ср., шт",
+                        f"{kpi['plan_avg']:,}",
                     )
                     k2.metric(
-                        "✅ Факт проекта, шт",
-                        f"{kpi['fact']:,}",
+                        "✅ Факт ср., шт",
+                        f"{kpi['fact_avg']:,}",
                     )
                     k3.metric(
-                        "🎯 ПФ клиент, %",
-                        f"{kpi['pf_percent']:.1f}%",
+                        "🎯 ПФ ср., %",
+                        f"{kpi['pf_percent']}%",
                     )
                     k4.metric(
-                        "👥 Кол-во RS, чел.",
-                        f"{kpi['rs_count']:,}",
+                        "👥 Кол-во RS ср., чел.",
+                        f"{kpi['rs_count_avg']:,}",
                     )
                     k5.metric(
-                        "📋 Кол-во анкет на 1 RS, шт.",
-                        f"{kpi['ankets_per_rs']:.1f}",
+                        "📋 Кол-во анкет на 1 RS ср., шт.",
+                        f"{kpi['ankets_per_rs']}",
                     )
 
                     st.markdown(
