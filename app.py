@@ -965,7 +965,6 @@ with tab_reports:
                         metric_name: str, 
                         title: str, 
                         y_title: str, 
-                        y_max: int, 
                         color_rule
                     ):
                         """Универсальная функция для отрисовки столбиковых графиков"""
@@ -979,7 +978,12 @@ with tab_reports:
                             chart_data["Value"] = chart_data["Value"].astype(int)
                             chart_data = chart_data.iloc[::-1].reset_index(drop=True)
 
+                            # Вызов функции цвета
                             chart_data["Цвет"] = chart_data["Value"].apply(color_rule)
+
+                            # Высота оси Y = макс значение + 20%, но не меньше 1
+                            max_val = chart_data["Value"].max()
+                            y_max = max(max_val * 1.2, 1)
 
                             bars = alt.Chart(chart_data).mark_bar(
                                 cornerRadiusTopLeft=2,
@@ -1036,6 +1040,33 @@ with tab_reports:
 
                             st.altair_chart(chart, use_container_width=True)
 
+                    def get_quantile_colors(series, top_is_violet=True):
+                        """
+                        Возвращает функцию для apply, которая красит
+                        топ 10% в фиолетовый (или фуксию), антитоп 10% в фуксию (или фиолетовый).
+                        Если все значения равны, возвращает серый.
+                        """
+                        clean_series = series.dropna()
+                        if clean_series.empty:
+                            return lambda x: "#757575"
+                        
+                        # Если все значения одинаковые, красим всё в серый
+                        if clean_series.min() == clean_series.max():
+                            return lambda x: "#757575"
+
+                        # Считаем квантили
+                        q10 = clean_series.quantile(0.1)
+                        q90 = clean_series.quantile(0.9)
+
+                        def color_func(val):
+                            if val >= q90:
+                                return "#6A1B9A" if top_is_violet else "#F50057"
+                            elif val <= q10:
+                                return "#F50057" if top_is_violet else "#6A1B9A"
+                            else:
+                                return "#757575"
+                        return color_func
+
                     # 1. ПФ клиент, %
                     def pf_color(val):
                         if val == 100:
@@ -1050,43 +1081,32 @@ with tab_reports:
                         "ПФ клиент, %", 
                         "ПФ клиент, %", 
                         "ПФ клиент, %", 
-                        120, 
                         pf_color
                     )
 
                     # 2. Кол-во RS, чел.
-                    def rs_color(val):
-                        if val >= 5:
-                            return "#6A1B9A"
-                        elif val < 2:
-                            return "#F50057"
-                        else:
-                            return "#757575"
+                    # Топ 10% - фиолетовый, антитоп 10% - фуксия
+                    rs_series = table.loc["Кол-во RS, чел."]
+                    rs_color = get_quantile_colors(rs_series, top_is_violet=True)
 
                     render_bar_chart(
                         table, 
                         "Кол-во RS, чел.", 
                         "Кол-во RS, чел.", 
                         "Кол-во RS, чел.", 
-                        max(table.loc["Кол-во RS, чел."].dropna().max() * 1.2, 10), 
                         rs_color
                     )
 
                     # 3. Кол-во анкет на 1 RS, шт.
-                    def ankets_color(val):
-                        if val >= 10:
-                            return "#6A1B9A"
-                        elif val < 5:
-                            return "#F50057"
-                        else:
-                            return "#757575"
+                    # Антитоп 10% (самые высокие) - фиолетовый, топ 10% - фуксия
+                    ankets_series = table.loc["Кол-во анкет на 1 RS, шт."]
+                    ankets_color = get_quantile_colors(ankets_series, top_is_violet=False)
 
                     render_bar_chart(
                         table, 
                         "Кол-во анкет на 1 RS, шт.", 
                         "Кол-во анкет на 1 RS, шт.", 
                         "Кол-во анкет на 1 RS, шт.", 
-                        max(table.loc["Кол-во анкет на 1 RS, шт."].dropna().max() * 1.2, 10), 
                         ankets_color
                     )
 
