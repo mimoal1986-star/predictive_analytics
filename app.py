@@ -825,201 +825,119 @@ with tab_reports:
             )
         else:
             clients = sorted(
-                df_dataset["Клиент"].dropna().unique().tolist()
+                df_dataset["Клиент"]
+                .dropna()
+                .unique()
+                .astype(str)
+                .tolist()
             )
-
-            today = datetime.now()
-            prev_month = today.month - 1
-            prev_year = today.year
-            if prev_month == 0:
-                prev_month = 12
-                prev_year -= 1
-
-            start_ym = 2024 * 100 + 5
-            end_ym_calendar = prev_year * 100 + prev_month
-
-            ym_series = (
-                df_dataset["Год"] * 100 + df_dataset["Месяц"]
-            ).dropna().astype(int)
-            if len(ym_series) > 0:
-                end_ym_dataset = int(ym_series.max())
-            else:
-                end_ym_dataset = start_ym
-
-            end_ym = max(end_ym_calendar, end_ym_dataset)
-
-            month_labels: list[str] = []
-            y, m = start_ym // 100, start_ym % 100
-            while (y * 100 + m) <= end_ym:
-                month_labels.append(_month_label(y, m))
-                if m == 12:
-                    y, m = y + 1, 1
-                else:
-                    m += 1
 
             if not clients:
                 st.warning("В датасете нет клиентов.")
-            elif not month_labels:
-                st.warning("Не удалось построить список месяцев.")
             else:
-                default_from_label = _month_label(2024, 5)
-                default_to_label = _month_label(prev_year, prev_month)
-                if default_to_label not in month_labels:
-                    default_to_label = month_labels[-1]
-                if default_from_label not in month_labels:
-                    default_from_label = month_labels[0]
+                client = st.selectbox(
+                    "Клиент",
+                    options=clients,
+                    key="rep_clients_client",
+                )
 
-                idx_from = month_labels.index(default_from_label)
-                idx_to = month_labels.index(default_to_label)
+                df_client_all = df_dataset[
+                    df_dataset["Клиент"] == client
+                ]
 
-                col_from, col_to, col_client = st.columns(3)
+                st.markdown("### 📊 Ключевые показатели")
+                report_key = (client,)
 
-                with col_from:
-                    from_label = st.selectbox(
-                        "С месяца",
-                        options=month_labels,
-                        index=idx_from,
-                        key="rep_clients_from",
+                if st.button("Рассчитать", type="primary"):
+                    if df_client_all.empty:
+                        st.session_state.report = {
+                            "key": report_key,
+                            "empty": True,
+                            "kpi": None,
+                            "table": None,
+                        }
+                    else:
+                        kpi = compute_kpi(df_client_all)
+
+                        ym_unique = (
+                            df_client_all["Год"] * 100
+                            + df_client_all["Месяц"]
+                        ).dropna().astype(int).unique().tolist()
+                        months = [
+                            (ym // 100, ym % 100)
+                            for ym in sorted(ym_unique)
+                        ]
+
+                        table = compute_monthly_table(
+                            df_client_all, months
+                        )
+                        st.session_state.report = {
+                            "key": report_key,
+                            "empty": False,
+                            "kpi": kpi,
+                            "table": table,
+                        }
+
+                report = st.session_state.report
+                if report is None or report["key"] != report_key:
+                    st.info(
+                        "Нажмите «Рассчитать», чтобы построить отчёт."
                     )
-
-                with col_to:
-                    to_label = st.selectbox(
-                        "По месяц",
-                        options=month_labels,
-                        index=idx_to,
-                        key="rep_clients_to",
-                    )
-
-                with col_client:
-                    client = st.selectbox(
-                        "Клиент",
-                        options=clients,
-                        key="rep_clients_client",
-                    )
-
-                from_ym = None
-                to_ym = None
-                fm = _parse_month_label(from_label)
-                if fm:
-                    from_ym = fm[0] * 100 + fm[1]
-                tm = _parse_month_label(to_label)
-                if tm:
-                    to_ym = tm[0] * 100 + tm[1]
-
-                if from_ym is None or to_ym is None:
-                    st.error("Не удалось разобрать период.")
-                elif from_ym > to_ym:
-                    st.error(
-                        "Начало периода позже конца. "
-                        "Поменяйте местами."
+                elif report["empty"]:
+                    st.info(
+                        "Нет данных по выбранному клиенту."
                     )
                 else:
-                    year_from, month_from = (
-                        from_ym // 100, from_ym % 100
+                    kpi = report["kpi"]
+                    table = report["table"]
+
+                    k1, k2, k3, k4, k5 = st.columns(5)
+                    k1.metric(
+                        "📊 План проекта, шт",
+                        f"{kpi['plan']:,}",
                     )
-                    year_to, month_to = (
-                        to_ym // 100, to_ym % 100
+                    k2.metric(
+                        "✅ Факт проекта, шт",
+                        f"{kpi['fact']:,}",
+                    )
+                    k3.metric(
+                        "🎯 ПФ клиент, %",
+                        f"{kpi['pf_percent']:.1f}%",
+                    )
+                    k4.metric(
+                        "👥 Кол-во RS, чел.",
+                        f"{kpi['rs_count']:,}",
+                    )
+                    k5.metric(
+                        "📋 Кол-во анкет на 1 RS, шт.",
+                        f"{kpi['ankets_per_rs']:.1f}",
                     )
 
-                    df_client_period = _df_for_period(
-                        _df_for_client(df_dataset, client),
-                        year_from, month_from,
-                        year_to, month_to,
+                    st.markdown(
+                        "### 📈 Ключевые показатели по месяцам"
+                    )
+                    st.dataframe(
+                        table,
+                        use_container_width=True,
                     )
 
-                    st.markdown("### 📊 Ключевые показатели")
-                    report_key = (client, from_label, to_label)
-
-                    if st.button("Рассчитать", type="primary"):
-                        if df_client_period.empty:
-                            st.session_state.report = {
-                                "key": report_key,
-                                "empty": True,
-                                "kpi": None,
-                                "table": None,
-                            }
-                        else:
-                            kpi = compute_kpi(df_client_period)
-                            months = _months_in_period(
-                                year_from, month_from,
-                                year_to, month_to,
-                            )
-                            table = compute_monthly_table(
-                                df_client_period, months
-                            )
-                            st.session_state.report = {
-                                "key": report_key,
-                                "empty": False,
-                                "kpi": kpi,
-                                "table": table,
-                            }
-
-                    report = st.session_state.report
-                    if report is None or report["key"] != report_key:
-                        st.info(
-                            "Нажмите «Рассчитать», чтобы построить отчёт."
+                    excel_buffer = io.BytesIO()
+                    with pd.ExcelWriter(
+                        excel_buffer, engine="openpyxl"
+                    ) as writer:
+                        table.to_excel(
+                            writer,
+                            sheet_name="Ключевые показатели",
                         )
-                    elif report["empty"]:
-                        st.markdown("### 📊 Ключевые показатели")
-                        st.info(
-                            "Нет данных по выбранному клиенту "
-                            "за выбранный период."
-                        )
-                    else:
-                        kpi = report["kpi"]
-                        table = report["table"]
-
-                        st.markdown("### 📊 Ключевые показатели")
-                        k1, k2, k3, k4, k5 = st.columns(5)
-                        k1.metric(
-                            "📊 План проекта, шт",
-                            f"{kpi['plan']:,}",
-                        )
-                        k2.metric(
-                            "✅ Факт проекта, шт",
-                            f"{kpi['fact']:,}",
-                        )
-                        k3.metric(
-                            "🎯 ПФ клиент, %",
-                            f"{kpi['pf_percent']:.1f}%",
-                        )
-                        k4.metric(
-                            "👥 Кол-во RS, чел.",
-                            f"{kpi['rs_count']:,}",
-                        )
-                        k5.metric(
-                            "📋 Кол-во анкет на 1 RS, шт.",
-                            f"{kpi['ankets_per_rs']:.1f}",
-                        )
-
-                        st.markdown(
-                            "### 📈 Ключевые показатели по месяцам"
-                        )
-                        st.dataframe(
-                            table,
-                            use_container_width=True,
-                        )
-
-                        excel_buffer = io.BytesIO()
-                        with pd.ExcelWriter(
-                            excel_buffer, engine="openpyxl"
-                        ) as writer:
-                            table.to_excel(
-                                writer,
-                                sheet_name="Ключевые показатели",
-                            )
-                        st.download_button(
-                            "📥 Выгрузить в Excel",
-                            data=excel_buffer.getvalue(),
-                            file_name=(
-                                f"kpi_{client}_{from_label}_"
-                                f"{to_label}.xlsx"
-                            ),
-                            mime=(
-                                "application/vnd.openxmlformats-"
-                                "officedocument.spreadsheetml.sheet"
-                            ),
-                        )
+                    st.download_button(
+                        "📥 Выгрузить в Excel",
+                        data=excel_buffer.getvalue(),
+                        file_name=f"kpi_{client}.xlsx",
+                        mime=(
+                            "application/vnd.openxmlformats-"
+                            "officedocument.spreadsheetml.sheet"
+                        ),
+                    )
 
     # -----------------------------------------------------------
     # ПОДВКЛАДКА «РЕГИОНЫ» (заглушка)
