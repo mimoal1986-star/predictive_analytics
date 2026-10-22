@@ -1,5 +1,6 @@
 import gc
 import io
+import math
 import os
 import re
 import tempfile
@@ -13,14 +14,34 @@ import streamlit as st
 # Алиасы колонок: для каждой целевой — список возможных исходных
 # ---------------------------------------------------------------
 COLUMN_ALIASES = {
-    "ASM": ["ACC", "АСС", "ASM"],
-    "Дата визита": ["FinishTime"],
-    "Волна": ["SetName"],
+    # ASM: латиница ACC/ASM, кириллица АСС/АСМ
+    "ASM": ["ACC", "АСС", "ASM", "АСМ"],
+    # Дата визита: англ. FinishTime, рус. «Дата визита»
+    "Дата визита": ["FinishTime", "Дата визита"],
+    # Волна: SetName, а также рус. «Проекты», «Волна»
+    "Волна": ["SetName", "Проекты", "Волна"],
     "Код проекта": ["SetCode"],
     "Клиент": ["ClientName"],
-    "Регион short": ["RegionName", "Re", "Регион", "RegionName Чек"],
-    "RS": ["Тайный покупатель Fullname"],
+    # Регион: RegionName, Re, Регион, RegionName Чек, Re Чеккер, РЕГИОН
+    "Регион short": [
+        "RegionName", "Re", "Регион", "RegionName Чек",
+        "Re Чеккер", "РЕГИОН",
+    ],
+    # RS: Тайный покупатель Fullname, RS
+    "RS": ["Тайный покупатель Fullname", "RS"],
     "RS ID": ["Тайный покупатель ID"],
+}
+
+# Человекочитаемые названия для сообщений
+TARGET_LABELS = {
+    "ASM": "АСМ",
+    "Дата визита": "Дата визита",
+    "Волна": "Волна",
+    "Код проекта": "Код проекта",
+    "Клиент": "Клиент",
+    "Регион short": "Регион short",
+    "RS": "РС",
+    "RS ID": "RS ID",
 }
 
 FINAL_COLUMNS = [
@@ -42,9 +63,11 @@ PARQUET_PATH = Path("data/report_data.parquet")
 PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------
-# Парсер дат
+# Парсер дат: прекомпилированные регулярки + векторизация
 # ---------------------------------------------------------------
 EXCEL_EPOCH = datetime(1899, 12, 30)
+SERIAL_MIN = 1
+SERIAL_MAX = 100_000
 
 RU_MONTHS = {
     "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
@@ -60,8 +83,12 @@ EN_MONTHS = {
     "november": 11, "december": 12,
 }
 
-SERIAL_MIN = 1
-SERIAL_MAX = 100_000
+_RE_ISO = re.compile(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})")
+_RE_DMY = re.compile(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})")
+_RE_DM = re.compile(r"(\d{1,2})[./-](\d{1,2})")
+_RE_RU = re.compile(r"(\d{1,2})\s+([а-яё]+)(?:\s+(\d{2,4}))?")
+_RE_EN_DMY = re.compile(r"(\d{1,2})[\s-]+([a-z]+)\.?[\s-]*(\d{2,4})?")
+_RE_EN_MDY = re.compile(r"([a-z]+)\.?[\s-]+(\d{1,2})(?:,?[\s-]+(\d{2,4}))?")
 
 
 def _safe_ts(year: int, month: int, day: int) -> pd.Timestamp | None:
@@ -85,26 +112,21 @@ def _from_serial(num: float) -> pd.Timestamp | None:
 
 
 def parse_visit_date(raw_value, sheet_year: int | None = None) -> pd.Timestamp | None:
-    """
-    Парсит дату визита. Формат ММДДГГГГ исключён: день всегда первым.
-    sheet_year — год из имени вкладки, fallback, если в значении года нет.
-    """
     if raw_value is None:
         return None
-    if isinstance(raw_value, float) and pd.isna(raw_value):
-        return None
-    if isinstance(raw_value, str) and not raw_value.strip():
-        return None
-
+    if isinstance(raw_value, float):
+        if math.isnan(raw_value):
+            return None
+        return _from_serial(raw_value)
+    if isinstance(raw_value, (int, bool)):
+        return _from_serial(float(raw_value))
     if isinstance(raw_value, (pd.Timestamp, datetime, date)):
         return pd.Timestamp(raw_value)
 
-    if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
-        return _from_serial(float(raw_value))
-
     text = str(raw_value).strip()
+    if not text:
+        return None
 
-    # Слитная цифровая запись
     if text.isdigit():
         if len(text) == 8:
             dd, mm, yyyy = int(text[:2]), int(text[2:4]), int(text[4:])
@@ -118,27 +140,23 @@ def parse_visit_date(raw_value, sheet_year: int | None = None) -> pd.Timestamp |
             return _safe_ts(_resolve_year(yy), mm, dd)
         return _from_serial(float(text))
 
-    # ISO: yyyy-mm-dd
-    m = re.fullmatch(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", text)
+    m = _RE_ISO.fullmatch(text)
     if m:
         return _safe_ts(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
-    # dd.mm.yyyy / dd.mm.yy
-    m = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})", text)
+    m = _RE_DMY.fullmatch(text)
     if m:
         dd, mm, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
         year = yy if yy >= 100 else _resolve_year(yy)
         return _safe_ts(year, mm, dd)
 
-    # dd.mm без года
-    m = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})", text)
+    m = _RE_DM.fullmatch(text)
     if m:
         if sheet_year is None:
             return None
         return _safe_ts(sheet_year, int(m.group(2)), int(m.group(1)))
 
-    # Русский текст: 13 августа 2026 / 13 августа
-    m = re.fullmatch(r"(\d{1,2})\s+([а-яё]+)(?:\s+(\d{2,4}))?", text.lower())
+    m = _RE_RU.fullmatch(text.lower())
     if m:
         dd = int(m.group(1))
         mm = RU_MONTHS.get(m.group(2))
@@ -153,8 +171,7 @@ def parse_visit_date(raw_value, sheet_year: int | None = None) -> pd.Timestamp |
             return None
         return _safe_ts(year, mm, dd)
 
-    # Английский текст: 13 Aug 2026 / 13-Aug-26
-    m = re.fullmatch(r"(\d{1,2})[\s-]+([a-z]+)\.?[\s-]*(\d{2,4})?", text.lower())
+    m = _RE_EN_DMY.fullmatch(text.lower())
     if m:
         dd = int(m.group(1))
         mm = EN_MONTHS.get(m.group(2).rstrip("."))
@@ -169,8 +186,7 @@ def parse_visit_date(raw_value, sheet_year: int | None = None) -> pd.Timestamp |
             return None
         return _safe_ts(year, mm, dd)
 
-    # Английский текст: Aug 13, 2026
-    m = re.fullmatch(r"([a-z]+)\.?[\s-]+(\d{1,2})(?:,?[\s-]+(\d{2,4}))?", text.lower())
+    m = _RE_EN_MDY.fullmatch(text.lower())
     if m:
         mm = EN_MONTHS.get(m.group(1).rstrip("."))
         if mm is None:
@@ -186,6 +202,34 @@ def parse_visit_date(raw_value, sheet_year: int | None = None) -> pd.Timestamp |
         return _safe_ts(year, mm, dd)
 
     return None
+
+
+def parse_dates_vectorized(series: pd.Series, sheet_year: int) -> pd.Series:
+    result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+
+    # 1. Числа → Excel serial
+    numeric = pd.to_numeric(series, errors="coerce")
+    is_num = numeric.notna() & (numeric >= SERIAL_MIN) & (numeric <= SERIAL_MAX)
+    if is_num.any():
+        result.loc[is_num] = pd.Timestamp(EXCEL_EPOCH) + pd.to_timedelta(
+            numeric[is_num].astype("float64"), unit="D"
+        )
+
+    # 2. Строки → pandas
+    is_str = series.notna() & ~is_num
+    if is_str.any():
+        str_vals = series[is_str].astype(str).str.strip()
+        parsed = pd.to_datetime(str_vals, dayfirst=True, errors="coerce")
+        result.loc[is_str] = parsed.values
+
+    # 3. Остаток → медленный парсер
+    unresolved = result.isna() & series.notna()
+    if unresolved.any():
+        result.loc[unresolved] = series[unresolved].apply(
+            lambda v: parse_visit_date(v, sheet_year=sheet_year)
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------
@@ -213,10 +257,6 @@ def _parse_sheet(
     sheet_name: str,
     sheet_year: int,
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """
-    Возвращает (good, bad). good — строки с распознанной датой,
-    bad — с нераспознанной (для отчёта).
-    """
     try:
         df = xls.parse(sheet_name)
     except Exception as e:
@@ -227,37 +267,47 @@ def _parse_sheet(
 
     mapping = _resolve_columns(df)
     missing = [t for t in COLUMN_ALIASES if t not in mapping]
+
+    # Не пропускаем лист — предупреждаем и заполняем пусто
     if missing:
-        st.warning(f"Лист «{sheet_name}» пропущен: нет колонок {missing}")
-        return None, None
+        lines = [
+            f"Лист «{sheet_name}» {TARGET_LABELS[t]} = пусто: нет колонок ['{t}']"
+            for t in missing
+        ]
+        st.warning("\n".join(lines))
 
-    # Оригинальный FinishTime и CritID — до переименования
-    raw_finish = df[mapping["Дата визита"]].copy()
-    crit_id = df["CritID"].copy() if "CritID" in df.columns else pd.Series([None] * len(df))
+    # Собираем итоговый DataFrame
+    out = pd.DataFrame(index=df.index)
+    for target in COLUMN_ALIASES:
+        if target in mapping:
+            out[target] = df[mapping[target]]
+        else:
+            out[target] = pd.NA
 
-    # Переименовываем нужные колонки
-    df = df[[mapping[t] for t in COLUMN_ALIASES]].copy()
-    df.columns = list(COLUMN_ALIASES.keys())
-
-    # Парсим даты с учётом года вкладки
-    parsed = df["Дата визита"].apply(
-        lambda v: parse_visit_date(v, sheet_year=sheet_year)
+    raw_finish = (
+        df[mapping["Дата визита"]]
+        if "Дата визита" in mapping
+        else pd.Series([pd.NA] * len(df), index=df.index)
     )
-    df["Дата визита"] = parsed
+    crit_id = df["CritID"] if "CritID" in df.columns else None
 
-    bad_mask = df["Дата визита"].isna()
-    good_rows = df[~bad_mask].copy()
-    bad_rows = df[bad_mask].copy()
+    out["Дата визита"] = parse_dates_vectorized(out["Дата визита"], sheet_year)
 
-    # Отчёт по плохим датам
+    bad_mask = out["Дата визита"].isna()
+    good_rows = out[~bad_mask]
+    bad_rows = out[bad_mask]
+
+    bad_report = None
     if not bad_rows.empty:
         bad_report = pd.DataFrame({
             "Вкладка": sheet_name,
             "FinishTime (оригинал)": raw_finish.loc[bad_rows.index].values,
-            "CritID": crit_id.loc[bad_rows.index].values,
+            "CritID": (
+                crit_id.loc[bad_rows.index].values
+                if crit_id is not None
+                else None
+            ),
         })
-    else:
-        bad_report = None
 
     return good_rows, bad_report
 
@@ -308,9 +358,10 @@ def convert_excel_to_parquet(
             skipped_sheets.append(sheet_name)
             continue
 
-        # Год/Месяц
         if not good.empty:
-            good.drop(columns=[c for c in ("Год", "Месяц") if c in good.columns], inplace=True)
+            good = good.drop(
+                columns=[c for c in ("Год", "Месяц") if c in good.columns]
+            )
             good.insert(0, "Год", year)
             good.insert(1, "Месяц", month)
             frames.append(good)
