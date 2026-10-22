@@ -83,8 +83,8 @@ EN_MONTHS = {
     "november": 11, "december": 12,
 }
 
-_RE_ISO = re.compile(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})")
-_RE_DMY = re.compile(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})")
+_RE_ISO = re.compile(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:[ T].*)?$")
+_RE_DMY = re.compile(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})(?:[ T].*)?$")
 _RE_DM = re.compile(r"(\d{1,2})[./-](\d{1,2})")
 _RE_RU = re.compile(r"(\d{1,2})\s+([а-яё]+)(?:\s+(\d{2,4}))?")
 _RE_EN_DMY = re.compile(r"(\d{1,2})[\s-]+([a-z]+)\.?[\s-]*(\d{2,4})?")
@@ -207,18 +207,21 @@ def parse_visit_date(raw_value, sheet_year: int | None = None) -> pd.Timestamp |
 def parse_dates_vectorized(series: pd.Series, sheet_year: int) -> pd.Series:
     result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
 
-    # 1. Числа → Excel serial
+    # 1. Числа → Excel serial (дробную часть отбрасываем — это время)
     numeric = pd.to_numeric(series, errors="coerce")
     is_num = numeric.notna() & (numeric >= SERIAL_MIN) & (numeric <= SERIAL_MAX)
     if is_num.any():
         result.loc[is_num] = pd.Timestamp(EXCEL_EPOCH) + pd.to_timedelta(
-            numeric[is_num].astype("float64"), unit="D"
+            numeric[is_num].astype("float64").astype("int64"), unit="D"
         )
 
-    # 2. Строки → pandas
+    # 2. Строки → pandas (время отрезаем до парсинга)
     is_str = series.notna() & ~is_num
     if is_str.any():
         str_vals = series[is_str].astype(str).str.strip()
+        str_vals = str_vals.str.replace(
+            r"[ T]\d{1,2}:\d{2}(?::\d{2})?.*$", "", regex=True
+        )
         parsed = pd.to_datetime(str_vals, dayfirst=True, errors="coerce")
         result.loc[is_str] = parsed.values
 
@@ -292,6 +295,7 @@ def _parse_sheet(
     crit_id = df["CritID"] if "CritID" in df.columns else None
 
     out["Дата визита"] = parse_dates_vectorized(out["Дата визита"], sheet_year)
+    out["Дата визита"] = out["Дата визита"].dt.normalize()
 
     bad_mask = out["Дата визита"].isna()
     good_rows = out[~bad_mask]
