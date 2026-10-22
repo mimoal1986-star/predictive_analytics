@@ -549,3 +549,8 @@ if uploaded is not None:
                 file_name="preview_100.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
