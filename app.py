@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 
 # ===============================================================
-# СХЕМА ДАННЫХ — единая точка правды
+# СХЕМА ДАННЫХ
 # ===============================================================
 REQUIRED_COLUMNS = [
     "Тип файла",
@@ -39,28 +39,11 @@ PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def validate_parquet(df: pd.DataFrame) -> tuple[bool, list[str]]:
-    """Проверяет наличие обязательных колонок. Возвращает (ok, missing)."""
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     return (len(missing) == 0, missing)
 
 
-def filter_period(
-    df: pd.DataFrame,
-    year_from: int, month_from: int,
-    year_to: int, month_to: int,
-) -> pd.DataFrame:
-    """Фильтр по периоду включительно. Год*100 + месяц — сравнение."""
-    start = year_from * 100 + month_from
-    end = year_to * 100 + month_to
-    ym = df["Год"] * 100 + df["Месяц"]
-    return df[(ym >= start) & (ym <= end)]
-
-
 def compute_metrics(df: pd.DataFrame, **params) -> dict:
-    """
-    Заглушка. Позже сюда накручивается методология.
-    Не знает про Streamlit, возвращает dict.
-    """
     return {}
 
 
@@ -695,15 +678,12 @@ with tab_upload:
         type="primary",
         disabled=not ok,
     ):
-        # Кнопка только загружает датасет в session_state.
-        # Никакого расчёта — расчёт на вкладке «Отчеты».
         st.session_state.dataset["df"] = df_loaded
         st.session_state.dataset["loaded_at"] = datetime.now()
         st.session_state.dataset["file_hash"] = hash(
             parquet_file.getvalue()
         )
         st.session_state.dataset["metrics"] = None
-        # Сбрасываем результаты отчётов: датасет новый
         st.session_state.report = None
         st.success("Датасет загружен. Перейдите на вкладку «Отчеты».")
 
@@ -722,52 +702,13 @@ with tab_reports:
     # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОТЧЁТОВ
     # -----------------------------------------------------------
     def _month_label(year: int, month: int) -> str:
-        return f"{month:02d}.{year % 100:02d}"
+        return f"{month}_{year}"
 
-    def _parse_month_label(label: str) -> tuple[int, int] | None:
-        m = re.fullmatch(r"(\d{2})\.(\d{2})", label.strip())
-        if not m:
-            return None
-        month = int(m.group(1))
-        year = 2000 + int(m.group(2))
-        if not (1 <= month <= 12):
-            return None
-        return year, month
-
-    def _df_for_client(
-        df: pd.DataFrame, client: str
-    ) -> pd.DataFrame:
-        return df[df["Клиент"] == client]
-
-    def _df_for_period(
-        df: pd.DataFrame,
-        year_from: int, month_from: int,
-        year_to: int, month_to: int,
-    ) -> pd.DataFrame:
-        start = year_from * 100 + month_from
-        end = year_to * 100 + month_to
-        ym = df["Год"] * 100 + df["Месяц"]
-        return df[(ym >= start) & (ym <= end)]
-
-    def _months_in_period(
-        year_from: int, month_from: int,
-        year_to: int, month_to: int,
-    ) -> list[tuple[int, int]]:
-        months = []
-        y, m = year_from, month_from
-        while (y, m) <= (year_to, month_to):
-            months.append((y, m))
-            if m == 12:
-                y, m = y + 1, 1
-            else:
-                m += 1
-        return months
-
-    def compute_kpi(df_client_period: pd.DataFrame) -> dict:
-        plan = len(df_client_period)
-        fact = int((df_client_period["Тип файла"] == "ЗП").sum())
+    def compute_kpi(df_client_all: pd.DataFrame) -> dict:
+        plan = len(df_client_all)
+        fact = int((df_client_all["Тип файла"] == "ЗП").sum())
         pf_percent = (fact / plan * 100) if plan > 0 else 0.0
-        rs_unique = df_client_period["RS"].dropna().nunique()
+        rs_unique = df_client_all["RS"].dropna().nunique()
         ankets_per_rs = (fact / rs_unique) if rs_unique > 0 else 0.0
         return {
             "plan": plan,
@@ -778,7 +719,7 @@ with tab_reports:
         }
 
     def compute_monthly_table(
-        df_client_period: pd.DataFrame,
+        df_client_all: pd.DataFrame,
         months: list[tuple[int, int]],
     ) -> pd.DataFrame:
         rows = {
@@ -789,16 +730,15 @@ with tab_reports:
             "Кол-во анкет на 1 RS, шт.": [],
         }
         for y, m in reversed(months):
-            sub = df_client_period[
-                (df_client_period["Год"] == y)
-                & (df_client_period["Месяц"] == m)
+            sub = df_client_all[
+                (df_client_all["Год"] == y)
+                & (df_client_all["Месяц"] == m)
             ]
             plan = len(sub)
             fact = int((sub["Тип файла"] == "ЗП").sum())
             pf = (fact / plan * 100) if plan > 0 else 0.0
             rs_unique = sub["RS"].dropna().nunique()
             ankets = (fact / rs_unique) if rs_unique > 0 else 0.0
-            label = _month_label(y, m)
             rows["План проекта, шт"].append(plan)
             rows["Факт проекта, шт"].append(fact)
             rows["ПФ клиент, %"].append(pf)
@@ -817,15 +757,6 @@ with tab_reports:
     # -----------------------------------------------------------
     with rep_clients:
         df_dataset = st.session_state.dataset.get("df")
-        if df_dataset is not None:
-            st.write(
-                "DEBUG Год/Месяц (первые 10):",
-                df_dataset[["Год", "Месяц"]].head(10).to_dict("records"),
-            )
-            st.write(
-                "DEBUG dtypes:",
-                df_dataset[["Год", "Месяц"]].dtypes.to_dict(),
-            )
 
         if df_dataset is None:
             st.info(
@@ -868,13 +799,15 @@ with tab_reports:
                     else:
                         kpi = compute_kpi(df_client_all)
 
-                        ym_unique = (
-                            df_client_all["Год"] * 100
-                            + df_client_all["Месяц"]
-                        ).dropna().astype(int).unique().tolist()
+                        pairs = (
+                            df_client_all[["Год", "Месяц"]]
+                            .dropna()
+                            .drop_duplicates()
+                            .sort_values(["Год", "Месяц"])
+                            .itertuples(index=False, name=None)
+                        )
                         months = [
-                            (ym // 100, ym % 100)
-                            for ym in sorted(ym_unique)
+                            (int(y), int(m)) for y, m in pairs
                         ]
 
                         table = compute_monthly_table(
@@ -893,9 +826,7 @@ with tab_reports:
                         "Нажмите «Рассчитать», чтобы построить отчёт."
                     )
                 elif report["empty"]:
-                    st.info(
-                        "Нет данных по выбранному клиенту."
-                    )
+                    st.info("Нет данных по выбранному клиенту.")
                 else:
                     kpi = report["kpi"]
                     table = report["table"]
