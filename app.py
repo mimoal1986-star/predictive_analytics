@@ -681,11 +681,21 @@ if st.button("Конвертировать в Parquet", type="primary"):
                 st.session_state.sheets_bytes = None
 
             full_df = pd.read_parquet(PARQUET_PATH)
-            zp_preview = full_df[full_df["Тип файла"] == "ЗП"].head(50)
-            hv_preview = full_df[full_df["Тип файла"] == "Хвосты"].head(50)
-            preview_df = pd.concat(
-                [zp_preview, hv_preview], ignore_index=True
+
+            # Q1 2026: январь–март
+            q1_mask = (
+                (full_df["Год"] == 2026)
+                & (full_df["Месяц"].isin([1, 2, 3]))
             )
+            preview_df = full_df[q1_mask].reset_index(drop=True)
+
+            if preview_df.empty:
+                st.warning(
+                    "В датасете нет строк за Q1 2026 "
+                    "(январь–март 2026). Проверьте, что в файлах "
+                    "есть вкладки 0126, 0226, 0326 и Хвосты 01–03.2026."
+                )
+
             st.session_state.preview_df = preview_df
 
             preview_buffer = io.BytesIO()
@@ -748,14 +758,21 @@ if st.session_state.stats is not None:
         )
 
     if st.session_state.preview_df is not None:
-        st.subheader("Превью: 50 строк ЗП + 50 строк Хвосты")
+        preview_df = st.session_state.preview_df
+        total_rows = len(preview_df)
+
+        st.subheader(
+            f"Превью Q1 2026 (январь–март): ЗП + Хвосты "
+            f"(показано {min(200, total_rows)} из {total_rows})"
+        )
         st.dataframe(
-            st.session_state.preview_df,
+            preview_df.head(200),
             use_container_width=True,
         )
         st.download_button(
-            "Скачать превью 100 строк (50 ЗП + 50 Хвосты) в Excel",
+            f"Скачать все строки ЗП + Хвосты за Q1 2026 в Excel "
+            f"({total_rows} строк)",
             data=st.session_state.preview_bytes,
-            file_name="preview_100.xlsx",
+            file_name="q1_2026_all.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
