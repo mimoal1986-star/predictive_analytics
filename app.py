@@ -208,7 +208,15 @@ def parse_dates_vectorized(series: pd.Series, sheet_year: int) -> pd.Series:
     result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
 
     # 1. Числа → Excel serial (дробную часть отбрасываем — это время)
-    numeric = pd.to_numeric(series, errors="coerce")
+    # Нормализуем ТОЛЬКО строки вида "45450,90689" → "45450.90689"
+    normalized = series.copy()
+    is_str_mask = normalized.apply(lambda v: isinstance(v, str))
+    if is_str_mask.any():
+        s = normalized.loc[is_str_mask].astype(str).str.strip()
+        s = s.str.replace(r"^(\d+),(\d+)$", r"\1.\2", regex=True)
+        normalized.loc[is_str_mask] = s
+
+    numeric = pd.to_numeric(normalized, errors="coerce")
     is_num = numeric.notna() & (numeric >= SERIAL_MIN) & (numeric <= SERIAL_MAX)
     if is_num.any():
         result.loc[is_num] = pd.Timestamp(EXCEL_EPOCH) + pd.to_timedelta(
@@ -219,11 +227,30 @@ def parse_dates_vectorized(series: pd.Series, sheet_year: int) -> pd.Series:
     is_str = series.notna() & ~is_num
     if is_str.any():
         str_vals = series[is_str].astype(str).str.strip()
-        str_vals = str_vals.str.replace(
-            r"[ T]\d{1,2}:\d{2}(?::\d{2})?.*$", "", regex=True
+
+        # 2a. ISO-даты с временем: "2024-09-30 14:15:10" → "2024-09-30"
+        iso_mask = str_vals.str.match(
+            r"^\d{4}-\d{1,2}-\d{1,2}(?:[ T].*)?$", na=False
         )
-        parsed = pd.to_datetime(str_vals, dayfirst=True, errors="coerce")
-        result.loc[is_str] = parsed.values
+        if iso_mask.any():
+            iso_dates = pd.to_datetime(
+                str_vals[iso_mask].str.extract(
+                    r"^(\d{4}-\d{1,2}-\d{1,2})", expand=False
+                ),
+                format="%Y-%m-%d",
+                errors="coerce",
+            )
+            result.loc[str_vals.index[iso_mask]] = iso_dates.values
+
+        # 2b. Остальные строки — через pandas с dayfirst
+        rest_mask = ~iso_mask
+        if rest_mask.any():
+            rest_vals = str_vals[rest_mask]
+            rest_vals = rest_vals.str.replace(
+                r"[ T]\d{1,2}:\d{2}(?::\d{2})?.*$", "", regex=True
+            )
+            parsed = pd.to_datetime(rest_vals, dayfirst=True, errors="coerce")
+            result.loc[rest_vals.index] = parsed.values
 
     # 3. Остаток → медленный парсер
     unresolved = result.isna() & series.notna()
@@ -233,7 +260,6 @@ def parse_dates_vectorized(series: pd.Series, sheet_year: int) -> pd.Series:
         )
         result.loc[unresolved] = pd.to_datetime(extra, errors="coerce")
 
-    # Гарантируем datetime64[ns] на выходе
     return pd.to_datetime(result, errors="coerce")
 
 
@@ -296,7 +322,6 @@ def _parse_sheet(
     )
     crit_id = df["CritID"] if "CritID" in df.columns else None
 
-    out["Дата визита"] = parse_dates_vectorized(out["Дата визита"], sheet_year)
     out["Дата визита"] = pd.to_datetime(
         parse_dates_vectorized(out["Дата визита"], sheet_year),
         errors="coerce",
@@ -308,7 +333,7 @@ def _parse_sheet(
     bad_rows = out[bad_mask]
 
     bad_report = None
-    if not bad_rows.empty:
+    if "Дата визита" in mapping and not bad_rows.empty:
         bad_report = pd.DataFrame({
             "Вкладка": sheet_name,
             "FinishTime (оригинал)": raw_finish.loc[bad_rows.index].values,
