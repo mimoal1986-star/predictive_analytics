@@ -967,7 +967,6 @@ with tab_reports:
                         y_title: str, 
                         color_rule
                     ):
-                        """Универсальная функция для отрисовки столбиковых графиков"""
                         series = df.loc[metric_name]
                         chart_data = pd.DataFrame({
                             "Месяц": series.index,
@@ -977,23 +976,23 @@ with tab_reports:
                         if not chart_data.empty:
                             chart_data["Value"] = chart_data["Value"].astype(int)
                             chart_data = chart_data.iloc[::-1].reset_index(drop=True)
-
-                            # Вызов функции цвета
                             chart_data["Цвет"] = chart_data["Value"].apply(color_rule)
 
-                            # Высота оси Y = макс значение + 20%, но не меньше 1
                             max_val = chart_data["Value"].max()
                             y_max = max(max_val * 1.2, 1)
 
                             bars = alt.Chart(chart_data).mark_bar(
                                 cornerRadiusTopLeft=2,
                                 cornerRadiusTopRight=2,
-                                size=40 # Фиксированная ширина столбца
                             ).encode(
                                 x=alt.X(
                                     "Месяц:N",
                                     sort=None,
-                                    scale=alt.Scale(paddingInner=0.2, paddingOuter=0.5),
+                                    scale=alt.Scale(
+                                        bandSize=60,
+                                        paddingInner=0.2,
+                                        paddingOuter=0.5
+                                    ),
                                     axis=alt.Axis(
                                         labelAngle=0,
                                         labelFont=font,
@@ -1026,8 +1025,7 @@ with tab_reports:
                                 text=alt.Text("Value:Q", format="d")
                             )
 
-                            # Считаем ширину: 40px на столбец + 40px на отступы + 60px на ось Y
-                            calc_width = len(chart_data) * 80 + 60
+                            calc_width = len(chart_data) * 60 + 60
 
                             chart = (bars + text).properties(
                                 title=alt.TitleParams(
@@ -1037,14 +1035,13 @@ with tab_reports:
                                     anchor="start",
                                 ),
                                 height=400,
-                                width=calc_width # Применяем ширину
+                                width=calc_width
                             ).configure_view(
                                 strokeWidth=0
                             ).configure_axis(
                                 grid=False
                             )
 
-                            # Отключаем растягивание на всю ширину
                             st.altair_chart(chart, use_container_width=False)
 
                     def get_quantile_colors(series, top_is_violet=True):
