@@ -967,7 +967,6 @@ with tab_reports:
                         y_title: str, 
                         color_rule
                     ):
-                        """Универсальная функция для отрисовки столбиковых графиков"""
                         series = df.loc[metric_name]
                         chart_data = pd.DataFrame({
                             "Месяц": series.index,
@@ -977,23 +976,23 @@ with tab_reports:
                         if not chart_data.empty:
                             chart_data["Value"] = chart_data["Value"].astype(int)
                             chart_data = chart_data.iloc[::-1].reset_index(drop=True)
-
-                            # Вызов функции цвета
                             chart_data["Цвет"] = chart_data["Value"].apply(color_rule)
 
-                            # Высота оси Y = макс значение + 20%, но не меньше 1
                             max_val = chart_data["Value"].max()
                             y_max = max(max_val * 1.2, 1)
 
                             bars = alt.Chart(chart_data).mark_bar(
                                 cornerRadiusTopLeft=2,
                                 cornerRadiusTopRight=2,
-                                size=40 # Фиксированная ширина столбца
                             ).encode(
                                 x=alt.X(
                                     "Месяц:N",
                                     sort=None,
-                                    scale=alt.Scale(paddingInner=0.2, paddingOuter=0.5),
+                                    scale=alt.Scale(
+                                        bandSize=60,
+                                        paddingInner=0.2,
+                                        paddingOuter=0.5
+                                    ),
                                     axis=alt.Axis(
                                         labelAngle=0,
                                         labelFont=font,
@@ -1026,8 +1025,7 @@ with tab_reports:
                                 text=alt.Text("Value:Q", format="d")
                             )
 
-                            # Считаем ширину: 40px на столбец + 40px на отступы + 60px на ось Y
-                            calc_width = len(chart_data) * 80 + 60
+                            calc_width = len(chart_data) * 60 + 60
 
                             chart = (bars + text).properties(
                                 title=alt.TitleParams(
@@ -1037,85 +1035,14 @@ with tab_reports:
                                     anchor="start",
                                 ),
                                 height=400,
-                                width=calc_width # Применяем ширину
+                                width=calc_width
                             ).configure_view(
                                 strokeWidth=0
                             ).configure_axis(
                                 grid=False
                             )
 
-                            # Отключаем растягивание на всю ширину
                             st.altair_chart(chart, use_container_width=False)
-
-                    def get_quantile_colors(series, top_is_violet=True):
-                        """
-                        Возвращает функцию для apply, которая красит
-                        топ 10% в фиолетовый (или фуксию), антитоп 10% в фуксию (или фиолетовый).
-                        Если все значения равны, возвращает серый.
-                        """
-                        clean_series = series.dropna()
-                        if clean_series.empty:
-                            return lambda x: "#757575"
-                        
-                        # Если все значения одинаковые, красим всё в серый
-                        if clean_series.min() == clean_series.max():
-                            return lambda x: "#757575"
-
-                        # Считаем квантили
-                        q10 = clean_series.quantile(0.1)
-                        q90 = clean_series.quantile(0.9)
-
-                        def color_func(val):
-                            if val >= q90:
-                                return "#6A1B9A" if top_is_violet else "#F50057"
-                            elif val <= q10:
-                                return "#F50057" if top_is_violet else "#6A1B9A"
-                            else:
-                                return "#757575"
-                        return color_func
-
-                    # 1. ПФ клиент, %
-                    def pf_color(val):
-                        if val == 100:
-                            return "#6A1B9A"
-                        elif val < 80:
-                            return "#F50057"
-                        else:
-                            return "#757575"
-
-                    render_bar_chart(
-                        table, 
-                        "ПФ клиент, %", 
-                        "ПФ клиент, %", 
-                        "ПФ клиент, %", 
-                        pf_color
-                    )
-
-                    # 2. Кол-во RS, чел.
-                    # Топ 10% - фиолетовый, антитоп 10% - фуксия
-                    rs_series = table.loc["Кол-во RS, чел."]
-                    rs_color = get_quantile_colors(rs_series, top_is_violet=True)
-
-                    render_bar_chart(
-                        table, 
-                        "Кол-во RS, чел.", 
-                        "Кол-во RS, чел.", 
-                        "Кол-во RS, чел.", 
-                        rs_color
-                    )
-
-                    # 3. Кол-во анкет на 1 RS, шт.
-                    # Антитоп 10% (самые высокие) - фиолетовый, топ 10% - фуксия
-                    ankets_series = table.loc["Кол-во анкет на 1 RS, шт."]
-                    ankets_color = get_quantile_colors(ankets_series, top_is_violet=False)
-
-                    render_bar_chart(
-                        table, 
-                        "Кол-во анкет на 1 RS, шт.", 
-                        "Кол-во анкет на 1 RS, шт.", 
-                        "Кол-во анкет на 1 RS, шт.", 
-                        ankets_color
-                    )
 
     # -----------------------------------------------------------
     # ПОДВКЛАДКА «РЕГИОНЫ» (заглушка)
