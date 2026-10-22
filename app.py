@@ -383,7 +383,6 @@ def _parse_sheet_name_zp(sheet_name: str) -> tuple[int, int] | None:
         return None
     return year, month
 
-
 def _parse_sheet_name_hvosty(sheet_name: str) -> tuple[int, int] | None:
     m = re.fullmatch(r"Хвосты[\s_]+(\d{2})\.(\d{4})", sheet_name.strip())
     if not m:
@@ -391,6 +390,9 @@ def _parse_sheet_name_hvosty(sheet_name: str) -> tuple[int, int] | None:
     month = int(m.group(1))
     year = int(m.group(2))
     if not (1 <= month <= 12):
+        return None
+    # Ограничение: Хвосты только с мая 2024 включительно
+    if (year, month) < (2024, 5):
         return None
     return year, month
 
