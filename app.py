@@ -385,7 +385,7 @@ def _parse_sheet_name_zp(sheet_name: str) -> tuple[int, int] | None:
 
 
 def _parse_sheet_name_hvosty(sheet_name: str) -> tuple[int, int] | None:
-    m = re.fullmatch(r"Хвосты\s+(\d{2})\.(\d{4})", sheet_name.strip())
+    m = re.fullmatch(r"Хвосты[\s_]+(\d{2})\.(\d{4})", sheet_name.strip())
     if not m:
         return None
     month = int(m.group(1))
