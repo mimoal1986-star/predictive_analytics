@@ -641,7 +641,7 @@ st.set_page_config(page_title="Аналитика визитов", layout="wide"
 st.title("Аналитика визитов")
 
 tab_upload, tab_client, tab_settings = st.tabs(
-    ["Загрузка данных", "Клиент", "Настройки проекта"]
+    ["Загрузка данных", "Отчеты", "Настройки проекта"]
 )
 
 
@@ -706,7 +706,7 @@ with tab_upload:
 # ВКЛАДКА «КЛИЕНТ»
 # ---------------------------------------------------------------
 with tab_client:
-    st.header("Клиент")
+    st.header("Отчеты")
 
     df_dataset = st.session_state.dataset.get("df")
     if df_dataset is None:
