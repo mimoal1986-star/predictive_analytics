@@ -564,7 +564,12 @@ def convert_to_parquet(
         if c not in ("Год", "Месяц", "Дата визита", "RS ID")
     ]
     for col in text_cols:
-        combined[col] = combined[col].astype("string")
+        combined[col] = (
+            combined[col]
+            .astype("string")
+            .str.replace("\u00a0", " ", regex=False)
+            .str.strip()
+        )
 
     combined["Год"] = combined["Год"].astype("int16")
     combined["Месяц"] = combined["Месяц"].astype("int8")
