@@ -953,90 +953,142 @@ with tab_reports:
                     )
 
                     st.markdown("### 📊 Дашборд")
+                    st.markdown("<br>", unsafe_allow_html=True)
 
-                    pf_series = table.loc["ПФ клиент, %"]
+                    font = (
+                        "Inter, -apple-system, BlinkMacSystemFont, "
+                        "'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+                    )
 
-                    chart_data = pd.DataFrame({
-                        "Месяц": pf_series.index,
-                        "ПФ": pf_series.values,
-                    })
-                    chart_data = chart_data.dropna()
+                    def render_bar_chart(
+                        df: pd.DataFrame, 
+                        metric_name: str, 
+                        title: str, 
+                        y_title: str, 
+                        y_max: int, 
+                        color_rule
+                    ):
+                        """Универсальная функция для отрисовки столбиковых графиков"""
+                        series = df.loc[metric_name]
+                        chart_data = pd.DataFrame({
+                            "Месяц": series.index,
+                            "Value": series.values
+                        }).dropna()
 
-                    if not chart_data.empty:
-                        chart_data["ПФ"] = chart_data["ПФ"].astype(int)
-                        chart_data = chart_data.iloc[::-1].reset_index(drop=True)
+                        if not chart_data.empty:
+                            chart_data["Value"] = chart_data["Value"].astype(int)
+                            chart_data = chart_data.iloc[::-1].reset_index(drop=True)
 
-                        def get_color(val):
-                            if val == 100:
-                                return "#6A1B9A"
-                            elif val < 80:
-                                return "#F50057"
-                            else:
-                                return "#757575"
+                            chart_data["Цвет"] = chart_data["Value"].apply(color_rule)
 
-                        chart_data["Цвет"] = chart_data["ПФ"].apply(get_color)
-
-                        font = (
-                            "Inter, -apple-system, BlinkMacSystemFont, "
-                            "'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-                        )
-
-                        bars = alt.Chart(chart_data).mark_bar(
-                            cornerRadiusTopLeft=2,
-                            cornerRadiusTopRight=2,
-                        ).encode(
-                            x=alt.X(
-                                "Месяц:N",
-                                sort=None,
-                                axis=alt.Axis(
-                                    labelAngle=0,
-                                    labelFont=font,
-                                    title=None,
+                            bars = alt.Chart(chart_data).mark_bar(
+                                cornerRadiusTopLeft=2,
+                                cornerRadiusTopRight=2,
+                            ).encode(
+                                x=alt.X(
+                                    "Месяц:N",
+                                    sort=None,
+                                    axis=alt.Axis(
+                                        labelAngle=0,
+                                        labelFont=font,
+                                        title=None,
+                                    ),
                                 ),
-                            ),
-                            y=alt.Y(
-                                "ПФ:Q",
-                                scale=alt.Scale(domain=[0, 120]),
-                                axis=alt.Axis(
-                                    format="d",
-                                    title="ПФ клиент, %",
-                                    labelFont=font,
-                                    titleFont=font,
+                                y=alt.Y(
+                                    "Value:Q",
+                                    scale=alt.Scale(domain=[0, y_max]),
+                                    axis=alt.Axis(
+                                        format="d",
+                                        title=y_title,
+                                        labelFont=font,
+                                        titleFont=font,
+                                    ),
                                 ),
-                            ),
-                            color=alt.Color(
-                                "Цвет:N", scale=None, legend=None
-                            ),
-                        )
+                                color=alt.Color(
+                                    "Цвет:N", scale=None, legend=None
+                                ),
+                            )
 
-                        text = bars.mark_text(
-                            align="center",
-                            baseline="bottom",
-                            dy=-5,
-                            font=font,
-                            fontSize=12,
-                            color="#333333",
-                        ).encode(
-                            text=alt.Text("ПФ:Q", format="d")
-                        )
-
-                        chart = (bars + text).properties(
-                            title=alt.TitleParams(
-                                text="ПФ клиент, %",
+                            text = bars.mark_text(
+                                align="center",
+                                baseline="bottom",
+                                dy=-5,
                                 font=font,
-                                fontSize=16,
-                                anchor="start",
-                            ),
-                            height=400,
-                        ).configure_view(
-                            strokeWidth=0
-                        ).configure_axis(
-                            grid=False
-                        )
+                                fontSize=12,
+                                color="#333333",
+                            ).encode(
+                                text=alt.Text("Value:Q", format="d")
+                            )
 
-                        st.altair_chart(
-                            chart, use_container_width=True
-                        )
+                            chart = (bars + text).properties(
+                                title=alt.TitleParams(
+                                    text=title,
+                                    font=font,
+                                    fontSize=16,
+                                    anchor="start",
+                                ),
+                                height=400,
+                            ).configure_view(
+                                strokeWidth=0
+                            ).configure_axis(
+                                grid=False
+                            )
+
+                            st.altair_chart(chart, use_container_width=True)
+
+                    # 1. ПФ клиент, %
+                    def pf_color(val):
+                        if val == 100:
+                            return "#6A1B9A"
+                        elif val < 80:
+                            return "#F50057"
+                        else:
+                            return "#757575"
+
+                    render_bar_chart(
+                        table, 
+                        "ПФ клиент, %", 
+                        "ПФ клиент, %", 
+                        "ПФ клиент, %", 
+                        120, 
+                        pf_color
+                    )
+
+                    # 2. Кол-во RS, чел.
+                    def rs_color(val):
+                        if val >= 5:
+                            return "#6A1B9A"
+                        elif val < 2:
+                            return "#F50057"
+                        else:
+                            return "#757575"
+
+                    render_bar_chart(
+                        table, 
+                        "Кол-во RS, чел.", 
+                        "Кол-во RS, чел.", 
+                        "Кол-во RS, чел.", 
+                        max(table.loc["Кол-во RS, чел."].dropna().max() * 1.2, 10), 
+                        rs_color
+                    )
+
+                    # 3. Кол-во анкет на 1 RS, шт.
+                    def ankets_color(val):
+                        if val >= 10:
+                            return "#6A1B9A"
+                        elif val < 5:
+                            return "#F50057"
+                        else:
+                            return "#757575"
+
+                    render_bar_chart(
+                        table, 
+                        "Кол-во анкет на 1 RS, шт.", 
+                        "Кол-во анкет на 1 RS, шт.", 
+                        "Кол-во анкет на 1 RS, шт.", 
+                        max(table.loc["Кол-во анкет на 1 RS, шт."].dropna().max() * 1.2, 10), 
+                        ankets_color
+                    )
 
     # -----------------------------------------------------------
     # ПОДВКЛАДКА «РЕГИОНЫ» (заглушка)
