@@ -952,7 +952,7 @@ with tab_reports:
                         ),
                     )
 
-                    st.markdown("### 📊 Графики")
+                    st.markdown("### 📊 Дашборд")
 
                     pf_series = table.loc["ПФ клиент, %"]
 
@@ -1025,11 +1025,13 @@ with tab_reports:
                                 text="ПФ клиент, %",
                                 font=font,
                                 fontSize=16,
-                                anchor="middle",
+                                anchor="start",
                             ),
                             height=400,
                         ).configure_view(
                             strokeWidth=0
+                        ).configure_axis(
+                            grid=False
                         )
 
                         st.altair_chart(
