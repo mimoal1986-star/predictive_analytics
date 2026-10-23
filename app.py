@@ -939,16 +939,23 @@ with tab_reports:
             col_f1, col_f2 = st.columns(2)
             
             with col_f1:
-                ym_series = (df_dataset["Год"] * 100 + df_dataset["Месяц"]).dropna().unique()
-                min_ym = int(ym_series.min()) if len(ym_series) > 0 else 202401
-                max_ym = int(ym_series.max()) if len(ym_series) > 0 else 202612
+                pairs = sorted(set(
+                    (int(y), int(m)) for y, m in df_dataset[["Год", "Месяц"]]
+                    .dropna().itertuples(index=False, name=None)
+                ))
                 
                 period_opts = []
-                for y in range(min_ym // 100, max_ym // 100 + 1):
-                    for m in range(1, 13):
-                        if (y == min_ym // 100 and m < min_ym % 100) or (y == max_ym // 100 and m > max_ym % 100):
-                            continue
+                if pairs:
+                    y_min, m_min = pairs[0]
+                    y_max, m_max = pairs[-1]
+                    
+                    y, m = y_min, m_min
+                    while (y, m) <= (y_max, m_max):
                         period_opts.append(f"{m:02d}.{y}")
+                        if m == 12:
+                            y, m = y + 1, 1
+                        else:
+                            m += 1
                 
                 period_selected = st.multiselect(
                     "Выберите месяцы для выгрузки",
