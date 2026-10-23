@@ -977,13 +977,16 @@ with tab_reports:
                 df_export = df_dataset.copy()
                 
                 if period_selected:
-                    parsed_periods = []
+                    parsed_periods = set()
                     for p in period_selected:
                         mm, yyyy = p.split(".")
-                        parsed_periods.append((int(yyyy), int(mm)))
-                    ym = df_export["Год"] * 100 + df_export["Месяц"]
-                    periods_set = {y * 100 + m for y, m in parsed_periods}
-                    df_export = df_export[ym.isin(periods_set)]
+                        parsed_periods.add(int(yyyy) * 100 + int(mm))
+                    
+                    ym = (
+                        df_export["Год"].astype("int64") * 100
+                        + df_export["Месяц"].astype("int64")
+                    )
+                    df_export = df_export[ym.isin(parsed_periods)]
                     
                 if clients_selected:
                     df_export = df_export[df_export["Клиент"].isin(clients_selected)]
