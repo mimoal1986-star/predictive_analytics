@@ -884,6 +884,11 @@ def convert_to_parquet(
     mask_found = combined["_region_short_norm"].notna()
     combined.loc[mask_found, "Регион short"] = combined.loc[mask_found, "_region_short_norm"]
 
+    # НОВОЕ: для нераспознанных — AA / Не определен
+    mask_unrecognized = combined["_region_short_norm"].isna()
+    combined.loc[mask_unrecognized, "Регион short"] = "AA"
+    combined.loc[mask_unrecognized, "Регион long"] = "Не определен"
+
     combined = combined.drop(columns=["_region_short_norm", "_region_long_norm"])
 
     # ===========================================================
