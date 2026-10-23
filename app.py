@@ -621,7 +621,7 @@ def convert_to_parquet(
     # Гарантированно создаем колонку, чтобы не было KeyError
     if "План ТП, руб" not in combined.columns:
         combined["План ТП, руб"] = pd.NA
-
+        
     # Делаем merge только если в bdr_df есть нужная колонка
     if not bdr_df.empty and "План ТП, руб" in bdr_df.columns:
         combined["Код проекта"] = (
@@ -630,6 +630,9 @@ def convert_to_parquet(
             .str.strip()
             .replace(["nan", "<NA>", "None"], pd.NA)
         )
+        # Удаляем пустую колонку, чтобы merge не создал дубликат
+        if "План ТП, руб" in combined.columns:
+            combined = combined.drop(columns=["План ТП, руб"])
         combined = combined.merge(bdr_df, on="Код проекта", how="left")
 
     combined["План ТП, руб"] = pd.to_numeric(combined["План ТП, руб"], errors="coerce")
