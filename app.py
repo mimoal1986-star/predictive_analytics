@@ -24,6 +24,7 @@ REQUIRED_COLUMNS = [
     "Волна",
     "ASM",
     "Регион short",
+    "Регион long",
     "RS",
     "RS ID",
     "Дата визита",
@@ -43,6 +44,146 @@ CATEGORICAL_COLUMNS = [
 
 PARQUET_PATH = Path("data/report_data.parquet")
 PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+# ===============================================================
+# СЛОВАРИ РЕГИОНОВ
+# ===============================================================
+REGION_MAPPING = {
+    'AD': 'Республика Адыгея', 'AL': 'Алтайский край', 'AM': 'Амурская область',
+    'AR': 'Архангельская область', 'AS': 'Астраханская область', 'BK': 'Республика Башкортостан',
+    'BL': 'Белгородская область', 'BR': 'Брянская область', 'BU': 'Республика Бурятия',
+    'CK': 'Чукотский автономный округ', 'CL': 'Челябинская область', 'CN': 'Чеченская Республика',
+    'CV': 'Чувашская Республика', 'DA': 'Республика Дагестан', 'DN': 'Донецкая Народная Республика',
+    'GA': 'Республика Алтай', 'IN': 'Республика Ингушетия', 'IR': 'Иркутская область',
+    'IV': 'Ивановская область', 'KA': 'Камчатский край', 'KB': 'Кабардино-Балкарская Республика',
+    'KC': 'Карачаево-Черкесская Республика', 'KD': 'Краснодарский край', 'KE': 'Кемеровская область',
+    'KG': 'Калужская область', 'KH': 'Хабаровский край', 'KI': 'Республика Карелия',
+    'KK': 'Республика Хакасия', 'KL': 'Республика Калмыкия', 'KM': 'Ханты-Мансийский автономный округ',
+    'KN': 'Калининградская область', 'KO': 'Республика Коми', 'KS': 'Курская область',
+    'KT': 'Костромская область', 'KU': 'Курганская область', 'KV': 'Кировская область',
+    'KY': 'Красноярский край', 'LG': 'Луганская Народная Республика', 'LN': 'Ленинградская область',
+    'LP': 'Липецкая область', 'MC': 'Москва', 'ME': 'Республика Марий Эл',
+    'MG': 'Магаданская область', 'MM': 'Мурманская область', 'MR': 'Республика Мордовия',
+    'MS': 'Московская область', 'NG': 'Новгородская область', 'NN': 'Ненецкий автономный округ',
+    'NO': 'Республика Северная Осетия', 'NS': 'Новосибирская область', 'NZ': 'Нижегородская область',
+    'OB': 'Оренбургская область', 'OL': 'Орловская область', 'OM': 'Омская область',
+    'PE': 'Пермский край', 'PR': 'Приморский край', 'PS': 'Псковская область',
+    'PZ': 'Пензенская область', 'RK': 'Республика Крым', 'RO': 'Ростовская область',
+    'RZ': 'Рязанская область', 'SA': 'Самарская область', 'SK': 'Республика Саха (Якутия)',
+    'SL': 'Сахалинская область', 'SM': 'Смоленская область', 'SR': 'Саратовская область',
+    'ST': 'Ставропольский край', 'SV': 'Свердловская область', 'TB': 'Тамбовская область',
+    'TL': 'Тульская область', 'TO': 'Томская область', 'TT': 'Республика Татарстан',
+    'TU': 'Республика Тыва', 'TV': 'Тверская область', 'TY': 'Тюменская область',
+    'UD': 'Удмуртская Республика', 'UL': 'Ульяновская область', 'VG': 'Волгоградская область',
+    'VL': 'Владимирская область', 'VO': 'Вологодская область', 'VR': 'Воронежская область',
+    'YN': 'Ямало-Ненецкий автономный округ', 'YS': 'Ярославская область', 'YV': 'Еврейская автономная область',
+    'ZK': 'Забайкальский край', 'ZO': 'Запорожская область',
+    'AA': 'Минская область',
+}
+
+long_to_short_region = {
+    'Республика Адыгея': 'AD', 'Алтайский край': 'AL', 'Алтай': 'AL', 'Амурская область': 'AM',
+    'Архангельская область': 'AR', 'Астраханская область': 'AS', 'Республика Башкортостан': 'BK',
+    'Белгородская область': 'BL', 'Брянская область': 'BR', 'Республика Бурятия': 'BU',
+    'Чукотский автономный округ': 'CK', 'Челябинская область': 'CL', 'Чеченская Республика': 'CN',
+    'Чувашская Республика': 'CV', 'Республика Дагестан': 'DA', 'Донецкая Народная Республика': 'DN',
+    'Республика Алтай': 'GA', 'Республика Ингушетия': 'IN', 'Иркутская область': 'IR',
+    'Ивановская область': 'IV', 'Камчатский край': 'KA', 'Кабардино-Балкарская Республика': 'KB',
+    'Карачаево-Черкесская Республика': 'KC', 'Краснодарский край': 'KD', 'Кемеровская область': 'KE',
+    'Калужская область': 'KG', 'Хабаровский край': 'KH', 'Республика Карелия': 'KI',
+    'Республика Хакасия': 'KK', 'Республика Калмыкия': 'KL', 'Ханты-Мансийский автономный округ': 'KM',
+    'Калининградская область': 'KN', 'Республика Коми': 'KO', 'Курская область': 'KS',
+    'Костромская область': 'KT', 'Курганская область': 'KU', 'Кировская область': 'KV',
+    'Красноярский край': 'KY', 'Луганская Народная Республика': 'LG', 'Ленинградская область': 'LN',
+    'Липецкая область': 'LP', 'Московская область': 'MS', 'Москва': 'MC', 'Республика Марий Эл': 'ME',
+    'Магаданская область': 'MG', 'Мурманская область': 'MM', 'Республика Мордовия': 'MR',
+    'Новгородская область': 'NG', 'Ненецкий автономный округ': 'NN', 'Республика Северная Осетия': 'NO',
+    'Новосибирская область': 'NS', 'Нижегородская область': 'NZ', 'Оренбургская область': 'OB',
+    'Орловская область': 'OL', 'Омская область': 'OM', 'Пермский край': 'PE',
+    'Приморский край': 'PR', 'Псковская область': 'PS', 'Пензенская область': 'PZ',
+    'Республика Крым': 'RK', 'Ростовская область': 'RO', 'Рязанская область': 'RZ',
+    'Самарская область': 'SA', 'Республика Саха (Якутия)': 'SK', 'Сахалинская область': 'SL',
+    'Смоленская область': 'SM', 'Саратовская область': 'SR', 'Ставропольский край': 'ST',
+    'Свердловская область': 'SV', 'Тамбовская область': 'TB', 'Тульская область': 'TL',
+    'Томская область': 'TO', 'Республика Татарстан': 'TT', 'Республика Тыва': 'TU',
+    'Тверская область': 'TV', 'Тюменская область': 'TY', 'Удмуртская Республика': 'UD',
+    'Ульяновская область': 'UL', 'Волгоградская область': 'VG', 'Владимирская область': 'VL',
+    'Вологодская область': 'VO', 'Воронежская область': 'VR', 'Ямало-Ненецкий автономный округ': 'YN',
+    'Ярославская область': 'YS', 'Еврейская автономная область': 'YV', 'Забайкальский край': 'ZK',
+    'Запорожская область': 'ZO', 'Республика Чувашия': 'CV', 'Марий Эл': 'ME', 'Удмуртия': 'UD',
+    'Херсонская область': 'KS', 'Хабаровск': 'KH', 'Минская область': 'AA',
+}
+
+region_keywords = {
+    'AD': ['адыг'], 'AL': ['алтай'], 'AM': ['амур'],
+    'AR': ['архангельск'], 'AS': ['астрахан'], 'BK': ['башкортостан', 'башкир'],
+    'BL': ['белгород'], 'BR': ['брянск'], 'BU': ['бурят'],
+    'CL': ['челябин'], 'CN': ['чечен'], 'CV': ['чуваш'],
+    'DA': ['дагестан'], 'DN': ['донецк', 'донецкая'], 'GA': ['горный алтай', 'республика алтай'],
+    'IN': ['ингуш'], 'IR': ['иркут'], 'IV': ['иван'],
+    'KA': ['камчат'], 'KB': ['кабард'], 'KC': ['карача'],
+    'KD': ['краснодар'], 'KE': ['кемер'], 'KG': ['калуж'],
+    'KH': ['хабаров'], 'KI': ['карел'], 'KK': ['хакас'],
+    'KL': ['калмы'], 'KM': ['хант', 'манс'], 'KN': ['калинин'],
+    'KO': ['коми'], 'KS': ['курск'], 'KT': ['костр'],
+    'KU': ['курган'], 'KV': ['киров'], 'KY': ['краснояр'],
+    'LG': ['луганск', 'луганская'], 'LN': ['ленинград', 'питер'], 'LP': ['липец'],
+    'MC': ['моск'], 'ME': ['марий'], 'MG': ['магадан'],
+    'MM': ['мурман'], 'MR': ['мордов'], 'MS': ['моск'],
+    'NG': ['новгород'], 'NN': ['ненец'], 'NO': ['осет'],
+    'NS': ['новосиб'], 'NZ': ['нижегород'], 'OB': ['оренбург'],
+    'OL': ['орлов'], 'OM': ['омск'], 'PE': ['перм'],
+    'PR': ['примор'], 'PS': ['псков'], 'PZ': ['пенз'],
+    'RK': ['крым'], 'RO': ['ростов'], 'RZ': ['ряз'],
+    'SA': ['самар'], 'SK': ['саха', 'якут'], 'SL': ['сахалин'],
+    'SM': ['смол'], 'SR': ['саратов'], 'ST': ['ставроп'],
+    'SV': ['свердлов'], 'TB': ['тамбов'], 'TL': ['туль'],
+    'TO': ['томск'], 'TT': ['татар'], 'TU': ['тыва'],
+    'TV': ['твер'], 'TY': ['тюмен'], 'UD': ['удмурт'],
+    'UL': ['ульян'], 'VG': ['волгоград'], 'VL': ['владимир'],
+    'VO': ['волог'], 'VR': ['воронеж'], 'YN': ['ямал'],
+    'YS': ['ярослав'], 'YV': ['еврей'], 'ZK': ['забайкал'],
+    'ZO': ['запорожье', 'запорожская']
+}
+
+
+def normalize_region(value) -> tuple[str | None, str | None]:
+    if pd.isna(value):
+        return None, None
+
+    text = str(value).strip().lower()
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"\s+", " ", text)
+
+    if not text:
+        return None, None
+
+    # 1. Точное совпадение всей строки с длинным названием
+    if text in {k.lower() for k in long_to_short_region}:
+        for long_name, code in long_to_short_region.items():
+            if long_name.lower() == text:
+                return code, REGION_MAPPING.get(code, long_name)
+
+    # 2. Поиск 2-буквенного кода в начале строки или отделенным пробелом/дефисом
+    m = re.search(r"(?:^|[\s\-])([a-z]{2})(?:[\s\-]|$)", text)
+    if m:
+        code = m.group(1).upper()
+        if code in REGION_MAPPING:
+            return code, REGION_MAPPING[code]
+
+    # 3. Поиск полного длинного названия как подстроки
+    for long_name, code in long_to_short_region.items():
+        if long_name.lower() in text:
+            return code, REGION_MAPPING.get(code, long_name)
+
+    # 4. Поиск по ключевым словам
+    for code, keywords in region_keywords.items():
+        for kw in keywords:
+            if kw in text:
+                return code, REGION_MAPPING.get(code)
+
+    return None, None
 
 
 def validate_parquet(df: pd.DataFrame) -> tuple[bool, list[str]]:
@@ -610,7 +751,6 @@ def parse_ps(ps_bytes: bytes) -> pd.DataFrame:
         sub.columns = ["Клиент", "Дата старта", "Дата финиша"]
         sub["Код проекта"] = df[col_code] if col_code else pd.NA
 
-        # Нормализация клиента (удаляем "nan", пустые)
         sub["Клиент"] = (
             sub["Клиент"].astype(str).str.strip().str.lower()
             .str.replace("\u00a0", " ", regex=False)
@@ -619,7 +759,6 @@ def parse_ps(ps_bytes: bytes) -> pd.DataFrame:
         if sub.empty:
             continue
 
-        # Парсинг дат
         sub["Дата старта"] = pd.to_datetime(
             sub["Дата старта"].apply(lambda v: parse_visit_date(v, sheet_year=year)),
             errors="coerce",
@@ -632,14 +771,10 @@ def parse_ps(ps_bytes: bytes) -> pd.DataFrame:
         first_day = pd.Timestamp(year=year, month=month, day=1)
         last_day = first_day + pd.offsets.MonthEnd(0)
 
-        # 1. Заполняем пустые даты дефолтом
         sub["Дата старта"] = sub["Дата старта"].fillna(first_day)
         sub["Дата финиша"] = sub["Дата финиша"].fillna(last_day)
 
-        # 2. Обрезаем по границам месяца вкладки
-        # Если старт раньше 1-го числа — ставим 1-е
         sub.loc[sub["Дата старта"] < first_day, "Дата старта"] = first_day
-        # Если финиш позже последнего числа — ставим последнее
         sub.loc[sub["Дата финиша"] > last_day, "Дата финиша"] = last_day
 
         sub["Год"] = year
@@ -729,7 +864,31 @@ def convert_to_parquet(
     del all_frames
     gc.collect()
 
-    # --- ОБОГАЩЕНИЕ БДР ---
+    # ===========================================================
+    # НОРМАЛИЗАЦИЯ РЕГИОНОВ
+    # ===========================================================
+    raw_regions = combined["Регион short"].astype(str)
+    results = [normalize_region(v) for v in raw_regions]
+    combined["_region_short_norm"] = [r[0] for r in results]
+    combined["_region_long_norm"] = [r[1] for r in results]
+
+    mask_unrecognized = combined["_region_short_norm"].isna()
+    if mask_unrecognized.any():
+        bad_regions = combined.loc[mask_unrecognized, ["Тип файла", "Регион short"]].copy()
+        bad_regions = bad_regions.drop_duplicates(subset=["Регион short"])
+        bad_regions.rename(columns={"Регион short": "Оригинал"}, inplace=True)
+    else:
+        bad_regions = None
+
+    combined["Регион long"] = combined["_region_long_norm"]
+    mask_found = combined["_region_short_norm"].notna()
+    combined.loc[mask_found, "Регион short"] = combined.loc[mask_found, "_region_short_norm"]
+
+    combined = combined.drop(columns=["_region_short_norm", "_region_long_norm"])
+
+    # ===========================================================
+    # ОБОГАЩЕНИЕ БДР
+    # ===========================================================
     bdr_df = pd.DataFrame()
     if bdr_bytes:
         bdr_df = parse_bdr(bdr_bytes)
@@ -762,7 +921,9 @@ def convert_to_parquet(
         - combined.loc[mask_both_filled, "Факт ТП, руб"]
     )
 
-    # --- ОБОГАЩЕНИЕ ПС ---
+    # ===========================================================
+    # ОБОГАЩЕНИЕ ПС
+    # ===========================================================
     combined["Дата старта"] = pd.to_datetime(
         dict(year=combined["Год"].astype(int), month=combined["Месяц"].astype(int), day=1)
     )
@@ -780,12 +941,10 @@ def convert_to_parquet(
             .str.replace("\u00a0", " ", regex=False)
         )
 
-        # ИТЕРАЦИЯ 1: по клиенту
         ps_client = ps_df[["Год", "Месяц", "Клиент", "Дата старта", "Дата финиша"]].rename(
             columns={"Дата старта": "Дата старта_ps", "Дата финиша": "Дата финиша_ps"}
         )
         
-        # Сохраняем старый индекс для безопасного возврата
         combined["_old_idx"] = combined.index
         
         merged1 = combined.merge(
@@ -798,18 +957,15 @@ def convert_to_parquet(
         
         mask_found1 = merged1["Дата старта_ps"].notna()
         
-        # Безопасное присваивание по старому индексу
         if mask_found1.any():
             found_idx = merged1.loc[mask_found1, "_old_idx"].values
             combined.loc[found_idx, "Дата старта"] = merged1.loc[mask_found1, "Дата старта_ps"].values
             combined.loc[found_idx, "Дата финиша"] = merged1.loc[mask_found1, "Дата финиша_ps"].values
 
-        # ИТЕРАЦИЯ 2: по коду (только для непокрытых)
         mask_not_found = ~mask_found1
         if mask_not_found.any():
             sub = merged1.loc[mask_not_found].copy()
             
-            # Разворачиваем коды ПС в длинный формат, чтобы избежать декартова произведения
             ps_long = ps_df[["Год", "Месяц", "Код проекта", "Дата старта", "Дата финиша"]].copy()
             ps_long["Код проекта"] = ps_long["Код проекта"].astype(str).str.split(", ")
             ps_long = ps_long.explode("Код проекта")
@@ -834,7 +990,6 @@ def convert_to_parquet(
 
         combined = combined.drop(columns=["_клиент_norm", "_old_idx"])
 
-    # Длительность
     combined["Длительность"] = (
         combined["Дата финиша"] - combined["Дата старта"]
     ).dt.days.astype("Int64")
@@ -878,6 +1033,7 @@ def convert_to_parquet(
         "parquet_size_mb": parquet_path.stat().st_size / (1024 * 1024),
         "bad_dates": len(error_report) if error_report is not None else 0,
         "error_report": error_report,
+        "bad_regions": bad_regions,
         "hvosty_excluded_names": hvosty_excluded_names,
         "hvosty_included_names": hvosty_included_names,
     }
@@ -904,6 +1060,7 @@ if "convert" not in st.session_state:
         "stats": None,
         "parquet_bytes": None,
         "bad_dates_bytes": None,
+        "bad_regions_bytes": None,
         "sheets_bytes": None,
     }
 
@@ -1466,6 +1623,14 @@ with tab_settings:
                 else:
                     conv["bad_dates_bytes"] = None
 
+                if stats.get("bad_regions") is not None and not stats["bad_regions"].empty:
+                    reg_buffer = io.BytesIO()
+                    with pd.ExcelWriter(reg_buffer, engine="openpyxl") as writer:
+                        stats["bad_regions"].to_excel(writer, index=False, sheet_name="BadRegions")
+                    conv["bad_regions_bytes"] = reg_buffer.getvalue()
+                else:
+                    conv["bad_regions_bytes"] = None
+
                 if stats["hvosty_included_names"] or stats["hvosty_excluded_names"]:
                     sheets_buffer = io.BytesIO()
                     with pd.ExcelWriter(sheets_buffer, engine="openpyxl") as writer:
@@ -1498,6 +1663,10 @@ with tab_settings:
         if conv["bad_dates_bytes"]:
             st.warning(f"Не распознано дат визита: {stats['bad_dates']}. Скачайте отчёт ниже.")
             st.download_button("Скачать Excel с ошибками дат", data=conv["bad_dates_bytes"], file_name="bad_dates.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        if conv.get("bad_regions_bytes"):
+            st.warning(f"Не распознано регионов: {len(stats['bad_regions'])}. Скачайте отчёт ниже.")
+            st.download_button("Скачать Excel с ошибками регионов", data=conv["bad_regions_bytes"], file_name="bad_regions.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         if conv["sheets_bytes"]:
             st.download_button("Скачать Excel со списком вкладок Хвостов (Included/Excluded)", data=conv["sheets_bytes"], file_name="hvosty_sheets.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
