@@ -631,8 +631,16 @@ def parse_ps(ps_bytes: bytes) -> pd.DataFrame:
 
         first_day = pd.Timestamp(year=year, month=month, day=1)
         last_day = first_day + pd.offsets.MonthEnd(0)
+
+        # 1. Заполняем пустые даты дефолтом
         sub["Дата старта"] = sub["Дата старта"].fillna(first_day)
         sub["Дата финиша"] = sub["Дата финиша"].fillna(last_day)
+
+        # 2. Обрезаем по границам месяца вкладки
+        # Если старт раньше 1-го числа — ставим 1-е
+        sub.loc[sub["Дата старта"] < first_day, "Дата старта"] = first_day
+        # Если финиш позже последнего числа — ставим последнее
+        sub.loc[sub["Дата финиша"] > last_day, "Дата финиша"] = last_day
 
         sub["Год"] = year
         sub["Месяц"] = month
