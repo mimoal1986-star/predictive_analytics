@@ -638,18 +638,17 @@ def convert_to_parquet(
     combined["План ТП, руб"] = pd.to_numeric(combined["План ТП, руб"], errors="coerce")
     combined["Факт ТП, руб"] = pd.to_numeric(combined["Факт ТП, руб"], errors="coerce")
     
-    # ПФ ТП = План - Факт. 
-    # Если Плана нет (NA), то и ПФ ТП должен быть NA, даже если есть Факт.
+    # ПРАВИЛО: если План ИЛИ Факт пустой — обнуляем оба
+    mask_missing = combined["План ТП, руб"].isna() | combined["Факт ТП, руб"].isna()
+    combined.loc[mask_missing, "План ТП, руб"] = pd.NA
+    combined.loc[mask_missing, "Факт ТП, руб"] = pd.NA
+    
+    # ПФ ТП = План - Факт. Считаем только там, где оба заполнены
     combined["ПФ ТП, руб"] = pd.NA
-    
-    # Считаем только там, где есть валидный План
-    mask_has_plan = combined["План ТП, руб"].notna()
-    
-    # Факт может быть NA (например, для Хвостов), тогда считаем его за 0 при вычитании
-    fact_for_calc = combined["Факт ТП, руб"].fillna(0)
-    
-    combined.loc[mask_has_plan, "ПФ ТП, руб"] = (
-        combined.loc[mask_has_plan, "План ТП, руб"] - fact_for_calc.loc[mask_has_plan]
+    mask_both_filled = combined["План ТП, руб"].notna() & combined["Факт ТП, руб"].notna()
+    combined.loc[mask_both_filled, "ПФ ТП, руб"] = (
+        combined.loc[mask_both_filled, "План ТП, руб"]
+        - combined.loc[mask_both_filled, "Факт ТП, руб"]
     )
 
     combined = combined[FINAL_COLUMNS]
