@@ -30,6 +30,9 @@ REQUIRED_COLUMNS = [
     "План ТП, руб",
     "Факт ТП, руб",
     "ПФ ТП, руб",
+    "Дата старта",
+    "Дата финиша",
+    "Длительность",
 ]
 
 FINAL_COLUMNS = REQUIRED_COLUMNS
@@ -374,7 +377,7 @@ def _parse_sheet(
         )
         out.loc[bad_mask, "Дата визита"] = fallback_date
 
-    # --- РАСЧЕТ ФАКТ ТП (безопасный) ---
+    # --- РАСЧЕТ ФАКТ ТП ---
     if is_zp:
         def get_numeric_series(col_name):
             if col_name in out.columns:
@@ -434,6 +437,17 @@ def _parse_sheet_name_hvosty(sheet_name: str) -> tuple[int, int] | None:
     if not (1 <= month <= 12):
         return None
     if (year, month) < (2024, 5):
+        return None
+    return year, month
+
+
+def _parse_sheet_name_ps(sheet_name: str) -> tuple[int, int] | None:
+    name = sheet_name.strip()
+    if len(name) != 4 or not name.isdigit():
+        return None
+    month = int(name[:2])
+    year = 2000 + int(name[2:])
+    if not (1 <= month <= 12):
         return None
     return year, month
 
@@ -529,11 +543,8 @@ def parse_bdr(bdr_bytes: bytes) -> pd.DataFrame:
     plan_col = None
     
     for col in df.columns:
-        # Ищем КОД
         if "КОД" in col.upper():
             code_col = col
-        
-        # Ищем точное совпадение с целевой колонкой (сжимаем пробелы и понижаем регистр)
         normalized_col = " ".join(col.lower().split())
         if normalized_col == target_col_name:
             plan_col = col
@@ -553,12 +564,109 @@ def parse_bdr(bdr_bytes: bytes) -> pd.DataFrame:
 
 
 # ===============================================================
+# ПС (Проекты Сервизория)
+# ===============================================================
+def parse_ps(ps_bytes: bytes) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=[
+        "Год", "Месяц", "Клиент", "Код проекта",
+        "Дата старта", "Дата финиша",
+    ])
+    try:
+        xls = pd.ExcelFile(io.BytesIO(ps_bytes), engine="openpyxl")
+    except Exception as e:
+        st.error(f"Не удалось прочитать файл ПС: {e}")
+        return empty
+
+    all_frames = []
+    for sheet_name in xls.sheet_names:
+        ym = _parse_sheet_name_ps(sheet_name)
+        if ym is None:
+            continue
+        year, month = ym
+
+        try:
+            df = xls.parse(sheet_name)
+        except Exception:
+            continue
+
+        df.columns = [str(c).strip() for c in df.columns]
+
+        col_client = col_code = col_start = col_end = None
+        for c in df.columns:
+            n = " ".join(c.lower().split())
+            if n in ("клиент на по", "проекты в https://ru.checker-soft.com", "проекты в shopmetrics"):
+                col_client = c
+            elif "код проекта" in n:
+                col_code = c
+            elif "дата старта" in n:
+                col_start = c
+            elif "дата финиша" in n:
+                col_end = c
+
+        if not col_client or not col_start or not col_end:
+            continue
+
+        sub = df[[col_client, col_start, col_end]].copy()
+        sub.columns = ["Клиент", "Дата старта", "Дата финиша"]
+        sub["Код проекта"] = df[col_code] if col_code else pd.NA
+
+        # Нормализация клиента (удаляем "nan", пустые)
+        sub["Клиент"] = (
+            sub["Клиент"].astype(str).str.strip().str.lower()
+            .str.replace("\u00a0", " ", regex=False)
+        )
+        sub = sub[~sub["Клиент"].isin(["nan", "<na>", "none", ""])]
+        if sub.empty:
+            continue
+
+        # Парсинг дат
+        sub["Дата старта"] = pd.to_datetime(
+            sub["Дата старта"].apply(lambda v: parse_visit_date(v, sheet_year=year)),
+            errors="coerce",
+        )
+        sub["Дата финиша"] = pd.to_datetime(
+            sub["Дата финиша"].apply(lambda v: parse_visit_date(v, sheet_year=year)),
+            errors="coerce",
+        )
+
+        first_day = pd.Timestamp(year=year, month=month, day=1)
+        last_day = first_day + pd.offsets.MonthEnd(0)
+        sub["Дата старта"] = sub["Дата старта"].fillna(first_day)
+        sub["Дата финиша"] = sub["Дата финиша"].fillna(last_day)
+
+        sub["Год"] = year
+        sub["Месяц"] = month
+        all_frames.append(sub)
+
+    if not all_frames:
+        return empty
+
+    combined = pd.concat(all_frames, ignore_index=True)
+
+    def join_codes(s):
+        codes = sorted(set(
+            str(v).strip() for v in s.dropna()
+            if str(v).strip() not in ("", "nan", "<NA>", "None")
+        ))
+        return ", ".join(codes)
+
+    grouped = combined.groupby(["Год", "Месяц", "Клиент"], as_index=False).agg({
+        "Код проекта": join_codes,
+        "Дата старта": "min",
+        "Дата финиша": "max",
+    })
+
+    return grouped
+
+
+# ===============================================================
 # КОНВЕРТАЦИЯ
 # ===============================================================
 def convert_to_parquet(
     zp_path: str | None,
     hvosty_path: str | None,
     bdr_bytes: bytes | None,
+    ps_bytes: bytes | None,
     parquet_path: Path,
     zp_aliases: dict[str, list[str]],
     hvosty_aliases: dict[str, list[str]],
@@ -618,11 +726,9 @@ def convert_to_parquet(
     if bdr_bytes:
         bdr_df = parse_bdr(bdr_bytes)
 
-    # Гарантированно создаем колонку, чтобы не было KeyError
     if "План ТП, руб" not in combined.columns:
         combined["План ТП, руб"] = pd.NA
-        
-    # Делаем merge только если в bdr_df есть нужная колонка
+
     if not bdr_df.empty and "План ТП, руб" in bdr_df.columns:
         combined["Код проекта"] = (
             combined["Код проекта"]
@@ -630,7 +736,6 @@ def convert_to_parquet(
             .str.strip()
             .replace(["nan", "<NA>", "None"], pd.NA)
         )
-        # Удаляем пустую колонку, чтобы merge не создал дубликат
         if "План ТП, руб" in combined.columns:
             combined = combined.drop(columns=["План ТП, руб"])
         combined = combined.merge(bdr_df, on="Код проекта", how="left")
@@ -638,12 +743,10 @@ def convert_to_parquet(
     combined["План ТП, руб"] = pd.to_numeric(combined["План ТП, руб"], errors="coerce")
     combined["Факт ТП, руб"] = pd.to_numeric(combined["Факт ТП, руб"], errors="coerce")
     
-    # ПРАВИЛО: если План ИЛИ Факт пустой — обнуляем оба
     mask_missing = combined["План ТП, руб"].isna() | combined["Факт ТП, руб"].isna()
     combined.loc[mask_missing, "План ТП, руб"] = pd.NA
     combined.loc[mask_missing, "Факт ТП, руб"] = pd.NA
     
-    # ПФ ТП = План - Факт. Считаем только там, где оба заполнены
     combined["ПФ ТП, руб"] = pd.NA
     mask_both_filled = combined["План ТП, руб"].notna() & combined["Факт ТП, руб"].notna()
     combined.loc[mask_both_filled, "ПФ ТП, руб"] = (
@@ -651,11 +754,88 @@ def convert_to_parquet(
         - combined.loc[mask_both_filled, "Факт ТП, руб"]
     )
 
+    # --- ОБОГАЩЕНИЕ ПС ---
+    combined["Дата старта"] = pd.to_datetime(
+        dict(year=combined["Год"].astype(int), month=combined["Месяц"].astype(int), day=1)
+    )
+    combined["Дата финиша"] = (
+        combined["Дата старта"] + pd.offsets.MonthEnd(0)
+    )
+
+    ps_df = pd.DataFrame()
+    if ps_bytes:
+        ps_df = parse_ps(ps_bytes)
+
+    if not ps_df.empty:
+        combined["_клиент_norm"] = (
+            combined["Клиент"].astype(str).str.strip().str.lower()
+            .str.replace("\u00a0", " ", regex=False)
+        )
+
+        # ИТЕРАЦИЯ 1: по клиенту
+        ps_client = ps_df[["Год", "Месяц", "Клиент", "Дата старта", "Дата финиша"]].rename(
+            columns={"Дата старта": "Дата старта_ps", "Дата финиша": "Дата финиша_ps"}
+        )
+        
+        # Сохраняем старый индекс для безопасного возврата
+        combined["_old_idx"] = combined.index
+        
+        merged1 = combined.merge(
+            ps_client,
+            left_on=["Год", "Месяц", "_клиент_norm"],
+            right_on=["Год", "Месяц", "Клиент"],
+            how="left",
+            suffixes=("", "_right"),
+        )
+        
+        mask_found1 = merged1["Дата старта_ps"].notna()
+        
+        # Безопасное присваивание по старому индексу
+        if mask_found1.any():
+            found_idx = merged1.loc[mask_found1, "_old_idx"].values
+            combined.loc[found_idx, "Дата старта"] = merged1.loc[mask_found1, "Дата старта_ps"].values
+            combined.loc[found_idx, "Дата финиша"] = merged1.loc[mask_found1, "Дата финиша_ps"].values
+
+        # ИТЕРАЦИЯ 2: по коду (только для непокрытых)
+        mask_not_found = ~mask_found1
+        if mask_not_found.any():
+            sub = merged1.loc[mask_not_found].copy()
+            
+            # Разворачиваем коды ПС в длинный формат, чтобы избежать декартова произведения
+            ps_long = ps_df[["Год", "Месяц", "Код проекта", "Дата старта", "Дата финиша"]].copy()
+            ps_long["Код проекта"] = ps_long["Код проекта"].astype(str).str.split(", ")
+            ps_long = ps_long.explode("Код проекта")
+            ps_long = ps_long[ps_long["Код проекта"].notna() & (ps_long["Код проекта"] != "")]
+            ps_long = ps_long.drop_duplicates(subset=["Год", "Месяц", "Код проекта"], keep="first")
+            
+            ps_long = ps_long.rename(
+                columns={"Дата старта": "Дата старта_ps2", "Дата финиша": "Дата финиша_ps2"}
+            )
+            
+            sub["Код проекта"] = sub["Код проекта"].astype(str).str.strip()
+            
+            merged2 = sub.merge(
+                ps_long, on=["Год", "Месяц", "Код проекта"], how="left"
+            )
+            
+            mask_found2 = merged2["Дата старта_ps2"].notna()
+            if mask_found2.any():
+                found2_idx = merged2.loc[mask_found2, "_old_idx"].values
+                combined.loc[found2_idx, "Дата старта"] = merged2.loc[mask_found2, "Дата старта_ps2"].values
+                combined.loc[found2_idx, "Дата финиша"] = merged2.loc[mask_found2, "Дата финиша_ps2"].values
+
+        combined = combined.drop(columns=["_клиент_norm", "_old_idx"])
+
+    # Длительность
+    combined["Длительность"] = (
+        combined["Дата финиша"] - combined["Дата старта"]
+    ).dt.days.astype("Int64")
+
     combined = combined[FINAL_COLUMNS]
 
     text_cols = [
         c for c in FINAL_COLUMNS
-        if c not in ("Год", "Месяц", "Дата визита", "RS ID", "План ТП, руб", "Факт ТП, руб", "ПФ ТП, руб")
+        if c not in ("Год", "Месяц", "Дата визита", "RS ID", "План ТП, руб", "Факт ТП, руб", "ПФ ТП, руб", "Дата старта", "Дата финиша", "Длительность")
     ]
     for col in text_cols:
         combined[col] = (
@@ -712,6 +892,7 @@ if "convert" not in st.session_state:
         "zp_bytes": None,
         "hvosty_bytes": None,
         "bdr_bytes": None,
+        "ps_bytes": None,
         "stats": None,
         "parquet_bytes": None,
         "bad_dates_bytes": None,
@@ -811,9 +992,6 @@ with tab_reports:
         ["Клиенты", "Регионы", "DSM", "Сводный"]
     )
 
-    # -----------------------------------------------------------
-    # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОТЧЁТОВ
-    # -----------------------------------------------------------
     def _month_label(year: int, month: int) -> str:
         return f"{month}_{year % 100:02d}"
 
@@ -924,16 +1102,12 @@ with tab_reports:
         table.index.name = "Метрика"
         return table
 
-    # -----------------------------------------------------------
-    # ПОДВКЛАДКА «КЛИЕНТЫ»
-    # -----------------------------------------------------------
     with rep_clients:
         df_dataset = st.session_state.dataset.get("df")
 
         if df_dataset is None:
             st.info("Сначала загрузите Parquet на вкладке «Загрузка данных».")
         else:
-            # Блок выгрузки
             st.markdown("### 📥 Выгрузка датасета")
             col_f1, col_f2 = st.columns(2)
             
@@ -1199,17 +1373,39 @@ with tab_reports:
 with tab_settings:
     st.header("Настройки проекта")
     st.caption(
-        "Конвертация Excel (ЗП + Хвосты) и обогащение БДР → Parquet. "
+        "Конвертация Excel (ЗП + Хвосты) и обогащение БДР, ПС → Parquet. "
         "Выполняется раз в месяц, результат сохраняется локально."
     )
 
     zp_file = st.file_uploader("Файл ЗП (вкладки в формате ММГГ, например 0125)", type=["xlsx", "xlsm"], key="settings_zp")
     hvosty_file = st.file_uploader("Файл Хвосты (вкладки в формате 'Хвосты 09.2026')", type=["xlsx", "xlsm"], key="settings_hvosty")
     bdr_file = st.file_uploader("Файл БДР (Excel, для колонок План ТП, Факт ТП, ПФ ТП)", type=["xlsx", "xlsm"], key="settings_bdr")
+    ps_file = st.file_uploader("Файл Проекты Сервизория (Excel, для колонок Дата старта, Дата финиша)", type=["xlsx", "xlsm"], key="settings_ps")
 
     if zp_file is not None: st.session_state.convert["zp_bytes"] = zp_file.getvalue()
     if hvosty_file is not None: st.session_state.convert["hvosty_bytes"] = hvosty_file.getvalue()
     if bdr_file is not None: st.session_state.convert["bdr_bytes"] = bdr_file.getvalue()
+    if ps_file is not None: st.session_state.convert["ps_bytes"] = ps_file.getvalue()
+
+    if st.button("Сформировать датасет ПС", type="secondary"):
+        ps_bytes = st.session_state.convert.get("ps_bytes")
+        if ps_bytes is None:
+            st.error("Загрузите файл ПС.")
+        else:
+            ps_df = parse_ps(ps_bytes)
+            if ps_df.empty:
+                st.warning("ПС пуст — нет валидных вкладок.")
+            else:
+                ps_buffer = io.BytesIO()
+                with pd.ExcelWriter(ps_buffer, engine="openpyxl") as writer:
+                    ps_df.to_excel(writer, index=False, sheet_name="ПС")
+                st.success(f"ПС собран: {len(ps_df):,} строк")
+                st.download_button(
+                    "📥 Скачать ПС в Excel",
+                    data=ps_buffer.getvalue(),
+                    file_name="ps_dataset.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 
     if st.button("Конвертировать в Parquet", type="primary"):
         conv = st.session_state.convert
@@ -1241,7 +1437,7 @@ with tab_settings:
                 try:
                     with st.spinner("Конвертирую…"):
                         stats = convert_to_parquet(
-                            zp_path, hvosty_path, conv["bdr_bytes"], PARQUET_PATH,
+                            zp_path, hvosty_path, conv["bdr_bytes"], conv["ps_bytes"], PARQUET_PATH,
                             st.session_state.aliases["zp"], st.session_state.aliases["hvosty"],
                             progress_callback=_cb,
                         )
