@@ -27,6 +27,9 @@ REQUIRED_COLUMNS = [
     "RS",
     "RS ID",
     "Дата визита",
+    "План ТП, руб",
+    "Факт ТП, руб",
+    "ПФ ТП, руб",
 ]
 
 FINAL_COLUMNS = REQUIRED_COLUMNS
@@ -44,10 +47,6 @@ def validate_parquet(df: pd.DataFrame) -> tuple[bool, list[str]]:
     return (len(missing) == 0, missing)
 
 
-def compute_metrics(df: pd.DataFrame, **params) -> dict:
-    return {}
-
-
 # ===============================================================
 # АЛИАСЫ КОЛОНОК
 # ===============================================================
@@ -63,6 +62,9 @@ DEFAULT_ZP_ALIASES = {
     ],
     "RS": ["Тайный покупатель Fullname", "RS"],
     "RS ID": ["Тайный покупатель ID"],
+    "ВСЕГО": ["ВСЕГО", "Всего", "Итого"],
+    "Компенсация": ["Компенсация за покупку", "Компенсация"],
+    "Бонус": ["Бонус", "Бонусы"],
 }
 
 DEFAULT_HVOSTY_ALIASES = {
@@ -74,6 +76,9 @@ DEFAULT_HVOSTY_ALIASES = {
     "Регион short": ["Регион"] + DEFAULT_ZP_ALIASES["Регион short"],
     "RS": [],
     "RS ID": [],
+    "ВСЕГО": [],
+    "Компенсация": [],
+    "Бонус": [],
 }
 
 TARGET_LABELS = {
@@ -85,6 +90,9 @@ TARGET_LABELS = {
     "Регион short": "Регион short",
     "RS": "РС",
     "RS ID": "RS ID",
+    "ВСЕГО": "ВСЕГО",
+    "Компенсация": "Компенсация",
+    "Бонус": "Бонус",
 }
 
 
@@ -116,17 +124,14 @@ _RE_RU = re.compile(r"(\d{1,2})\s+([а-яё]+)(?:\s+(\d{2,4}))?")
 _RE_EN_DMY = re.compile(r"(\d{1,2})[\s-]+([a-z]+)\.?[\s-]*(\d{2,4})?")
 _RE_EN_MDY = re.compile(r"([a-z]+)\.?[\s-]+(\d{1,2})(?:,?[\s-]+(\d{2,4}))?")
 
-
 def _safe_ts(year: int, month: int, day: int) -> pd.Timestamp | None:
     try:
         return pd.Timestamp(year=year, month=month, day=day)
     except (ValueError, OverflowError):
         return None
 
-
 def _resolve_year(yy: int) -> int:
     return 2000 + yy if yy < 70 else 1900 + yy
-
 
 def _from_serial(num: float) -> pd.Timestamp | None:
     if not (SERIAL_MIN <= num <= SERIAL_MAX):
@@ -135,7 +140,6 @@ def _from_serial(num: float) -> pd.Timestamp | None:
         return pd.Timestamp(EXCEL_EPOCH + timedelta(days=float(num)))
     except (OverflowError, ValueError):
         return None
-
 
 def parse_visit_date(raw_value, sheet_year: int | None = None) -> pd.Timestamp | None:
     if raw_value is None:
@@ -324,7 +328,7 @@ def _parse_sheet(
     mapping = _resolve_columns(df, aliases)
     missing = [
         t for t in aliases
-        if t not in mapping and aliases[t]
+        if t not in mapping and aliases[t] and t not in ("ВСЕГО", "Компенсация", "Бонус")
     ]
     if missing:
         lines = [
@@ -339,7 +343,7 @@ def _parse_sheet(
         if target in mapping:
             out[target] = df[mapping[target]]
         else:
-            out[target] = pd.NA
+            out[target] = pd.Series([pd.NA] * len(df), index=df.index)
 
     raw_finish = (
         df[mapping["Дата визита"]]
@@ -369,6 +373,27 @@ def _parse_sheet(
             year=sheet_year, month=sheet_month, day=1
         )
         out.loc[bad_mask, "Дата визита"] = fallback_date
+
+    # --- РАСЧЕТ ФАКТ ТП (безопасный) ---
+    if is_zp:
+        def get_numeric_series(col_name):
+            if col_name in out.columns:
+                return pd.to_numeric(out[col_name], errors="coerce")
+            return pd.Series(pd.NA, index=df.index)
+
+        vsego = get_numeric_series("ВСЕГО")
+        komp = get_numeric_series("Компенсация")
+        bonus = get_numeric_series("Бонус")
+        
+        has_data = vsego.notna()
+        out["Факт ТП, руб"] = pd.NA
+        out.loc[has_data, "Факт ТП, руб"] = (
+            vsego[has_data].fillna(0) - 
+            komp[has_data].fillna(0) - 
+            bonus[has_data].fillna(0)
+        )
+    else:
+        out["Факт ТП, руб"] = pd.NA
 
     good_rows = out[~bad_mask]
     bad_rows = out[bad_mask]
@@ -463,6 +488,11 @@ def process_file(
             good.insert(0, "Тип файла", file_type)
             good.insert(1, "Год", year)
             good.insert(2, "Месяц", month)
+            
+            for c in ["ВСЕГО", "Компенсация", "Бонус"]:
+                if c in good.columns:
+                    good = good.drop(columns=[c])
+                    
             for c in FINAL_COLUMNS:
                 if c not in good.columns:
                     good[c] = pd.NA
@@ -482,11 +512,53 @@ def process_file(
 
 
 # ===============================================================
+# БДР
+# ===============================================================
+def parse_bdr(bdr_bytes: bytes) -> pd.DataFrame:
+    try:
+        df = pd.read_excel(io.BytesIO(bdr_bytes))
+    except Exception as e:
+        st.error(f"Не удалось прочитать БДР: {e}")
+        return pd.DataFrame(columns=["Код проекта", "План ТП, руб"])
+
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    target_col_name = "расходы на тп/респонденты (план на 1 ед.)"
+    
+    code_col = None
+    plan_col = None
+    
+    for col in df.columns:
+        # Ищем КОД
+        if "КОД" in col.upper():
+            code_col = col
+        
+        # Ищем точное совпадение с целевой колонкой (сжимаем пробелы и понижаем регистр)
+        normalized_col = " ".join(col.lower().split())
+        if normalized_col == target_col_name:
+            plan_col = col
+            
+    if not code_col or not plan_col:
+        st.warning("В файле БДР не найдены колонки 'КОД' или 'Расходы на ТП/Респонденты (план на 1 ед.)'")
+        return pd.DataFrame(columns=["Код проекта", "План ТП, руб"])
+        
+    df = df[[code_col, plan_col]].dropna(subset=[code_col]).copy()
+    df.columns = ["Код проекта", "План ТП, руб"]
+    
+    df["Код проекта"] = df["Код проекта"].astype(str).str.strip()
+    df["План ТП, руб"] = pd.to_numeric(df["План ТП, руб"], errors="coerce")
+    
+    df = df.drop_duplicates(subset=["Код проекта"], keep="first")
+    return df
+
+
+# ===============================================================
 # КОНВЕРТАЦИЯ
 # ===============================================================
 def convert_to_parquet(
     zp_path: str | None,
     hvosty_path: str | None,
+    bdr_bytes: bytes | None,
     parquet_path: Path,
     zp_aliases: dict[str, list[str]],
     hvosty_aliases: dict[str, list[str]],
@@ -541,11 +613,44 @@ def convert_to_parquet(
     del all_frames
     gc.collect()
 
+    # --- ОБОГАЩЕНИЕ БДР ---
+    bdr_df = pd.DataFrame()
+    if bdr_bytes:
+        bdr_df = parse_bdr(bdr_bytes)
+
+    if not bdr_df.empty:
+        combined["Код проекта"] = (
+            combined["Код проекта"]
+            .astype(str)
+            .str.strip()
+            .replace(["nan", "<NA>", "None"], pd.NA)
+        )
+        combined = combined.merge(bdr_df, on="Код проекта", how="left")
+    else:
+        combined["План ТП, руб"] = pd.NA
+
+    combined["План ТП, руб"] = pd.to_numeric(combined["План ТП, руб"], errors="coerce")
+    combined["Факт ТП, руб"] = pd.to_numeric(combined["Факт ТП, руб"], errors="coerce")
+    
+    # ПФ ТП = План - Факт. 
+    # Если Плана нет (NA), то и ПФ ТП должен быть NA, даже если есть Факт.
+    combined["ПФ ТП, руб"] = pd.NA
+    
+    # Считаем только там, где есть валидный План
+    mask_has_plan = combined["План ТП, руб"].notna()
+    
+    # Факт может быть NA (например, для Хвостов), тогда считаем его за 0 при вычитании
+    fact_for_calc = combined["Факт ТП, руб"].fillna(0)
+    
+    combined.loc[mask_has_plan, "ПФ ТП, руб"] = (
+        combined.loc[mask_has_plan, "План ТП, руб"] - fact_for_calc.loc[mask_has_plan]
+    )
+
     combined = combined[FINAL_COLUMNS]
 
     text_cols = [
         c for c in FINAL_COLUMNS
-        if c not in ("Год", "Месяц", "Дата визита", "RS ID")
+        if c not in ("Год", "Месяц", "Дата визита", "RS ID", "План ТП, руб", "Факт ТП, руб", "ПФ ТП, руб")
     ]
     for col in text_cols:
         combined[col] = (
@@ -601,6 +706,7 @@ if "convert" not in st.session_state:
     st.session_state.convert = {
         "zp_bytes": None,
         "hvosty_bytes": None,
+        "bdr_bytes": None,
         "stats": None,
         "parquet_bytes": None,
         "bad_dates_bytes": None,
@@ -668,6 +774,7 @@ with tab_upload:
             ok, missing = validate_parquet(df_loaded)
             if not ok:
                 st.error("Колонки отсутствуют: " + ", ".join(missing))
+                st.info("Пожалуйста, пересоберите Parquet на вкладке «Настройки проекта».")
             else:
                 st.success(
                     f"Parquet прочитан: {len(df_loaded):,} строк, "
@@ -712,6 +819,8 @@ with tab_reports:
         plans = []
         facts = []
         rs_counts = []
+        plan_tps = []
+        fact_tps = []
 
         for y, m in months:
             sub = df_client_all[
@@ -723,33 +832,38 @@ with tab_reports:
             plans.append(len(sub))
             facts.append(int((sub["Тип файла"] == "ЗП").sum()))
             rs_counts.append(sub["RS"].dropna().nunique())
+            
+            zp_sub = sub[sub["Тип файла"] == "ЗП"]
+            if not zp_sub.empty:
+                plan_tp_val = zp_sub["План ТП, руб"].sum(min_count=1)
+                fact_tp_val = zp_sub["Факт ТП, руб"].sum(min_count=1)
+                if pd.notna(plan_tp_val):
+                    plan_tps.append(plan_tp_val)
+                if pd.notna(fact_tp_val):
+                    fact_tps.append(fact_tp_val)
 
         n = len(plans)
         if n == 0:
             return {
-                "plan_avg": 0,
-                "fact_avg": 0,
-                "pf_percent": 0,
-                "rs_count_avg": 0,
-                "ankets_per_rs": 0,
+                "plan_avg": 0, "fact_avg": 0, "pf_percent": 0,
+                "rs_count_avg": 0, "ankets_per_rs": 0,
+                "plan_tp_avg": 0, "fact_tp_avg": 0, "pf_tp_avg": 0,
             }
 
         plan_avg = round(sum(plans) / n)
         fact_avg = round(sum(facts) / n)
         rs_avg = round(sum(rs_counts) / n)
-        pf_percent = (
-            round(fact_avg / plan_avg * 100) if plan_avg > 0 else 0
-        )
-        ankets = (
-            round(fact_avg / rs_avg) if rs_avg > 0 else 0
-        )
+        pf_percent = (round(fact_avg / plan_avg * 100) if plan_avg > 0 else 0)
+        ankets = (round(fact_avg / rs_avg) if rs_avg > 0 else 0)
+        
+        plan_tp_avg = round(sum(plan_tps) / len(plan_tps)) if plan_tps else 0
+        fact_tp_avg = round(sum(fact_tps) / len(fact_tps)) if fact_tps else 0
+        pf_tp_avg = plan_tp_avg - fact_tp_avg
 
         return {
-            "plan_avg": plan_avg,
-            "fact_avg": fact_avg,
-            "pf_percent": pf_percent,
-            "rs_count_avg": rs_avg,
-            "ankets_per_rs": ankets,
+            "plan_avg": plan_avg, "fact_avg": fact_avg, "pf_percent": pf_percent,
+            "rs_count_avg": rs_avg, "ankets_per_rs": ankets,
+            "plan_tp_avg": plan_tp_avg, "fact_tp_avg": fact_tp_avg, "pf_tp_avg": pf_tp_avg,
         }
 
     def compute_monthly_table(
@@ -762,6 +876,9 @@ with tab_reports:
             "ПФ клиент, %": [],
             "Кол-во RS, чел.": [],
             "Кол-во анкет на 1 RS, шт.": [],
+            "План ТП, руб": [],
+            "Факт ТП, руб": [],
+            "ПФ ТП, руб": [],
         }
         for y, m in reversed(months):
             sub = df_client_all[
@@ -769,26 +886,35 @@ with tab_reports:
                 & (df_client_all["Месяц"] == m)
             ]
             if sub.empty:
-                rows["План проекта, шт"].append(None)
-                rows["Факт проекта, шт"].append(None)
-                rows["ПФ клиент, %"].append(None)
-                rows["Кол-во RS, чел."].append(None)
-                rows["Кол-во анкет на 1 RS, шт."].append(None)
+                for k in rows.keys():
+                    rows[k].append(None)
             else:
                 plan = len(sub)
                 fact = int((sub["Тип файла"] == "ЗП").sum())
                 pf = (fact / plan * 100) if plan > 0 else 0.0
                 rs_unique = sub["RS"].dropna().nunique()
                 ankets = (fact / rs_unique) if rs_unique > 0 else 0.0
+                
+                zp_sub = sub[sub["Тип файла"] == "ЗП"]
+                if not zp_sub.empty:
+                    plan_tp = zp_sub["План ТП, руб"].sum(min_count=1)
+                    fact_tp = zp_sub["Факт ТП, руб"].sum(min_count=1)
+                    pf_tp = plan_tp - fact_tp if pd.notna(plan_tp) and pd.notna(fact_tp) else None
+                else:
+                    plan_tp = None
+                    fact_tp = None
+                    pf_tp = None
+                
                 rows["План проекта, шт"].append(plan)
                 rows["Факт проекта, шт"].append(fact)
                 rows["ПФ клиент, %"].append(round(pf))
                 rows["Кол-во RS, чел."].append(rs_unique)
                 rows["Кол-во анкет на 1 RS, шт."].append(round(ankets))
+                rows["План ТП, руб"].append(plan_tp)
+                rows["Факт ТП, руб"].append(fact_tp)
+                rows["ПФ ТП, руб"].append(pf_tp)
 
-        columns = [
-            _month_label(y, m) for y, m in reversed(months)
-        ]
+        columns = [_month_label(y, m) for y, m in reversed(months)]
         table = pd.DataFrame(rows, index=columns).T
         table.index.name = "Метрика"
         return table
@@ -800,31 +926,88 @@ with tab_reports:
         df_dataset = st.session_state.dataset.get("df")
 
         if df_dataset is None:
-            st.info(
-                "Сначала загрузите Parquet на вкладке "
-                "«Загрузка данных»."
-            )
+            st.info("Сначала загрузите Parquet на вкладке «Загрузка данных».")
         else:
+            # Блок выгрузки
+            st.markdown("### 📥 Выгрузка датасета")
+            col_f1, col_f2 = st.columns(2)
+            
+            with col_f1:
+                ym_series = (df_dataset["Год"] * 100 + df_dataset["Месяц"]).dropna().unique()
+                min_ym = int(ym_series.min()) if len(ym_series) > 0 else 202401
+                max_ym = int(ym_series.max()) if len(ym_series) > 0 else 202612
+                
+                period_opts = []
+                for y in range(min_ym // 100, max_ym // 100 + 1):
+                    for m in range(1, 13):
+                        if (y == min_ym // 100 and m < min_ym % 100) or (y == max_ym // 100 and m > max_ym % 100):
+                            continue
+                        period_opts.append(f"{m:02d}.{y}")
+                
+                period_selected = st.multiselect(
+                    "Выберите месяцы для выгрузки",
+                    options=period_opts,
+                    default=period_opts[-3:] if len(period_opts) >= 3 else period_opts,
+                    key="export_period"
+                )
+            
+            with col_f2:
+                all_clients = sorted(df_dataset["Клиент"].dropna().unique().astype(str).tolist())
+                clients_selected = st.multiselect(
+                    "Выберите клиентов для выгрузки",
+                    options=all_clients,
+                    default=[],
+                    key="export_clients"
+                )
+
+            if st.button("📥 Сформировать Excel для выгрузки", type="primary"):
+                df_export = df_dataset.copy()
+                
+                if period_selected:
+                    parsed_periods = []
+                    for p in period_selected:
+                        mm, yyyy = p.split(".")
+                        parsed_periods.append((int(yyyy), int(mm)))
+                    ym = df_export["Год"] * 100 + df_export["Месяц"]
+                    periods_set = {y * 100 + m for y, m in parsed_periods}
+                    df_export = df_export[ym.isin(periods_set)]
+                    
+                if clients_selected:
+                    df_export = df_export[df_export["Клиент"].isin(clients_selected)]
+                    
+                if df_export.empty:
+                    st.warning("По выбранным фильтрам данных нет.")
+                else:
+                    export_buffer = io.BytesIO()
+                    with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
+                        df_export.to_excel(writer, index=False, sheet_name="Данные")
+                    
+                    st.session_state.export_bytes = export_buffer.getvalue()
+                    st.session_state.export_rows = len(df_export)
+            
+            if st.session_state.get("export_bytes"):
+                st.success(f"Файл готов ({st.session_state.export_rows} строк)")
+                st.download_button(
+                    "Скачать Excel",
+                    data=st.session_state.export_bytes,
+                    file_name="dataset_export.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_export_btn"
+                )
+            st.markdown("---")
+
             clients = sorted(
-                df_dataset["Клиент"]
-                .dropna()
-                .unique()
-                .astype(str)
-                .tolist()
+                df_dataset["Клиент"].dropna().unique().astype(str).tolist()
             )
 
             if not clients:
                 st.warning("В датасете нет клиентов.")
             else:
                 client = st.selectbox(
-                    "Клиент",
-                    options=clients,
-                    key="rep_clients_client",
+                    "Клиент", options=clients, key="rep_clients_client"
                 )
 
-                df_client_all = df_dataset[
-                    df_dataset["Клиент"] == client
-                ]
+                df_client_all = df_dataset[df_dataset["Клиент"] == client]
 
                 st.markdown("### 📊 Ключевые показатели")
                 report_key = (client,)
@@ -832,22 +1015,13 @@ with tab_reports:
                 if st.button("Рассчитать", type="primary"):
                     if df_client_all.empty:
                         st.session_state.report = {
-                            "key": report_key,
-                            "empty": True,
-                            "kpi": None,
-                            "table": None,
+                            "key": report_key, "empty": True, "kpi": None, "table": None,
                         }
                     else:
-                        pairs = sorted(
-                            set(
-                                (int(y), int(m))
-                                for y, m in df_client_all[
-                                    ["Год", "Месяц"]
-                                ]
-                                .dropna()
-                                .itertuples(index=False, name=None)
-                            )
-                        )
+                        pairs = sorted(set(
+                            (int(y), int(m)) for y, m in df_client_all[["Год", "Месяц"]]
+                            .dropna().itertuples(index=False, name=None)
+                        ))
                         if pairs:
                             y_min, m_min = pairs[0]
                             y_max, m_max = pairs[-1]
@@ -863,22 +1037,14 @@ with tab_reports:
                             months = []
 
                         kpi = compute_kpi(df_client_all, months)
-
-                        table = compute_monthly_table(
-                            df_client_all, months
-                        )
+                        table = compute_monthly_table(df_client_all, months)
                         st.session_state.report = {
-                            "key": report_key,
-                            "empty": False,
-                            "kpi": kpi,
-                            "table": table,
+                            "key": report_key, "empty": False, "kpi": kpi, "table": table,
                         }
 
                 report = st.session_state.report
                 if report is None or report["key"] != report_key:
-                    st.info(
-                        "Нажмите «Рассчитать», чтобы построить отчёт."
-                    )
+                    st.info("Нажмите «Рассчитать», чтобы построить отчёт.")
                 elif report["empty"]:
                     st.info("Нет данных по выбранному клиенту.")
                 else:
@@ -886,70 +1052,38 @@ with tab_reports:
                     table = report["table"]
 
                     k1, k2, k3, k4, k5 = st.columns(5)
-                    k1.metric(
-                        "📊 План ср., шт",
-                        f"{kpi['plan_avg']:,}",
-                    )
-                    k2.metric(
-                        "✅ Факт ср., шт",
-                        f"{kpi['fact_avg']:,}",
-                    )
-                    k3.metric(
-                        "🎯 ПФ ср., %",
-                        f"{kpi['pf_percent']}%",
-                    )
-                    k4.metric(
-                        "👥 Кол-во RS ср., чел.",
-                        f"{kpi['rs_count_avg']:,}",
-                    )
-                    k5.metric(
-                        "📋 Кол-во анкет на 1 RS ср., шт.",
-                        f"{kpi['ankets_per_rs']}",
-                    )
+                    k1.metric("📊 План ср., шт", f"{kpi['plan_avg']:,}")
+                    k2.metric("✅ Факт ср., шт", f"{kpi['fact_avg']:,}")
+                    k3.metric("🎯 ПФ ср., %", f"{kpi['pf_percent']}%")
+                    k4.metric("👥 Кол-во RS ср., чел.", f"{kpi['rs_count_avg']:,}")
+                    k5.metric("📋 Кол-во анкет на 1 RS ср., шт.", f"{kpi['ankets_per_rs']}")
+                    
+                    tk1, tk2, tk3 = st.columns(3)
+                    tk1.metric("💰 План ТП ср., руб", f"{kpi['plan_tp_avg']:,.0f}")
+                    tk2.metric("💵 Факт ТП ср., руб", f"{kpi['fact_tp_avg']:,.0f}")
+                    tk3.metric("📉 ПФ ТП ср., руб", f"{kpi['pf_tp_avg']:,.0f}")
 
-                    st.markdown(
-                        "### 📈 Ключевые показатели по месяцам"
-                    )
-                    st.dataframe(
-                        table,
-                        use_container_width=True,
-                    )
+                    st.markdown("### 📈 Ключевые показатели по месяцам")
+                    st.dataframe(table, use_container_width=True)
 
                     excel_buffer = io.BytesIO()
-                    with pd.ExcelWriter(
-                        excel_buffer, engine="openpyxl"
-                    ) as writer:
-                        table.to_excel(
-                            writer,
-                            sheet_name="Ключевые показатели",
-                        )
+                    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                        table.to_excel(writer, sheet_name="Ключевые показатели")
                     st.download_button(
                         "📥 Выгрузить в Excel",
                         data=excel_buffer.getvalue(),
                         file_name=f"kpi_{client}.xlsx",
-                        mime=(
-                            "application/vnd.openxmlformats-"
-                            "officedocument.spreadsheetml.sheet"
-                        ),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
                     dataset_buffer = io.BytesIO()
-                    with pd.ExcelWriter(
-                        dataset_buffer, engine="openpyxl"
-                    ) as writer:
-                        df_client_all.to_excel(
-                            writer,
-                            index=False,
-                            sheet_name="Датасет",
-                        )
+                    with pd.ExcelWriter(dataset_buffer, engine="openpyxl") as writer:
+                        df_client_all.to_excel(writer, index=False, sheet_name="Датасет")
                     st.download_button(
-                        "📥 Выгрузить датасет",
+                        "📥 Выгрузить датасет (все строки клиента)",
                         data=dataset_buffer.getvalue(),
                         file_name=f"dataset_{client}.xlsx",
-                        mime=(
-                            "application/vnd.openxmlformats-"
-                            "officedocument.spreadsheetml.sheet"
-                        ),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
                     st.markdown("### 📊 Дашборд")
@@ -961,100 +1095,56 @@ with tab_reports:
                     )
 
                     def render_bar_chart(
-                        df: pd.DataFrame, 
-                        metric_name: str, 
-                        title: str, 
-                        y_title: str, 
-                        color_rule
+                        df: pd.DataFrame, metric_name: str, title: str, y_title: str,
+                        color_rule, is_currency=False
                     ):
-                        """Универсальная функция для отрисовки столбиковых графиков"""
                         series = df.loc[metric_name]
                         chart_data = pd.DataFrame({
-                            "Месяц": series.index,
-                            "Value": series.values
+                            "Месяц": series.index, "Value": series.values
                         }).dropna()
 
                         if not chart_data.empty:
-                            chart_data["Value"] = chart_data["Value"].astype(int)
+                            chart_data["Value"] = chart_data["Value"].astype(float)
                             chart_data = chart_data.iloc[::-1].reset_index(drop=True)
-
-                            # Вызов функции цвета
                             chart_data["Цвет"] = chart_data["Value"].apply(color_rule)
 
-                            # Высота оси Y = макс значение + 20%, но не меньше 1
                             max_val = chart_data["Value"].max()
-                            y_max = max(max_val * 1.2, 1)
+                            min_val = chart_data["Value"].min()
+                            
+                            y_upper = max(max_val * 1.2, 1)
+                            y_lower = min(min_val * 1.2, 0) if min_val < 0 else 0
 
                             bars = alt.Chart(chart_data).mark_bar(
-                                cornerRadiusTopLeft=2,
-                                cornerRadiusTopRight=2,
+                                cornerRadiusTopLeft=2, cornerRadiusTopRight=2,
                             ).encode(
                                 x=alt.X(
-                                    "Месяц:N",
-                                    sort=None,
-                                    axis=alt.Axis(
-                                        labelAngle=0,
-                                        labelFont=font,
-                                        title=None,
-                                    ),
+                                    "Месяц:N", sort=None,
+                                    axis=alt.Axis(labelAngle=0, labelFont=font, title=None),
                                 ),
                                 y=alt.Y(
                                     "Value:Q",
-                                    scale=alt.Scale(domain=[0, y_max]),
-                                    axis=alt.Axis(
-                                        format="d",
-                                        title=y_title,
-                                        labelFont=font,
-                                        titleFont=font,
-                                    ),
+                                    scale=alt.Scale(domain=[y_lower, y_upper]),
+                                    axis=alt.Axis(format=".0f", title=y_title, labelFont=font, titleFont=font),
                                 ),
-                                color=alt.Color(
-                                    "Цвет:N", scale=None, legend=None
-                                ),
+                                color=alt.Color("Цвет:N", scale=None, legend=None),
                             )
 
                             text = bars.mark_text(
-                                align="center",
-                                baseline="bottom",
-                                dy=-5,
-                                font=font,
-                                fontSize=12,
-                                color="#333333",
-                            ).encode(
-                                text=alt.Text("Value:Q", format="d")
-                            )
+                                align="center", baseline="bottom", dy=-5,
+                                font=font, fontSize=12, color="#333333",
+                            ).encode(text=alt.Text("Value:Q", format=".0f" if not is_currency else ",.0f"))
 
                             chart = (bars + text).properties(
-                                title=alt.TitleParams(
-                                    text=title,
-                                    font=font,
-                                    fontSize=16,
-                                    anchor="start",
-                                ),
+                                title=alt.TitleParams(text=title, font=font, fontSize=16, anchor="start"),
                                 height=400,
-                            ).configure_view(
-                                strokeWidth=0
-                            ).configure_axis(
-                                grid=False
-                            )
+                            ).configure_view(strokeWidth=0).configure_axis(grid=False)
 
                             st.altair_chart(chart, use_container_width=True)
 
                     def get_quantile_colors(series, top_is_violet=True):
-                        """
-                        Возвращает функцию для apply, которая красит
-                        топ 10% в фиолетовый (или фуксию), антитоп 10% в фуксию (или фиолетовый).
-                        Если все значения равны, возвращает серый.
-                        """
                         clean_series = series.dropna()
-                        if clean_series.empty:
+                        if clean_series.empty or clean_series.min() == clean_series.max():
                             return lambda x: "#757575"
-                        
-                        # Если все значения одинаковые, красим всё в серый
-                        if clean_series.min() == clean_series.max():
-                            return lambda x: "#757575"
-
-                        # Считаем квантили
                         q10 = clean_series.quantile(0.1)
                         q90 = clean_series.quantile(0.9)
 
@@ -1067,66 +1157,25 @@ with tab_reports:
                                 return "#757575"
                         return color_func
 
-                    # 1. ПФ клиент, %
                     def pf_color(val):
-                        if val == 100:
-                            return "#6A1B9A"
-                        elif val < 80:
-                            return "#F50057"
-                        else:
-                            return "#757575"
+                        if val == 100: return "#6A1B9A"
+                        elif val < 80: return "#F50057"
+                        else: return "#757575"
 
-                    render_bar_chart(
-                        table, 
-                        "ПФ клиент, %", 
-                        "ПФ клиент, %", 
-                        "ПФ клиент, %", 
-                        pf_color
-                    )
+                    render_bar_chart(table, "ПФ клиент, %", "ПФ клиент, %", "ПФ клиент, %", pf_color)
 
-                    # 2. Кол-во RS, чел.
-                    # Топ 10% - фиолетовый, антитоп 10% - фуксия
                     rs_series = table.loc["Кол-во RS, чел."]
-                    rs_color = get_quantile_colors(rs_series, top_is_violet=True)
+                    render_bar_chart(table, "Кол-во RS, чел.", "Кол-во RS, чел.", "Кол-во RS, чел.", get_quantile_colors(rs_series, True))
 
-                    render_bar_chart(
-                        table, 
-                        "Кол-во RS, чел.", 
-                        "Кол-во RS, чел.", 
-                        "Кол-во RS, чел.", 
-                        rs_color
-                    )
-
-                    # 3. Кол-во анкет на 1 RS, шт.
-                    # Антитоп 10% (самые высокие) - фиолетовый, топ 10% - фуксия
                     ankets_series = table.loc["Кол-во анкет на 1 RS, шт."]
-                    ankets_color = get_quantile_colors(ankets_series, top_is_violet=False)
+                    render_bar_chart(table, "Кол-во анкет на 1 RS, шт.", "Кол-во анкет на 1 RS, шт.", "Кол-во анкет на 1 RS, шт.", get_quantile_colors(ankets_series, False))
+                    
+                    pf_tp_series = table.loc["ПФ ТП, руб"]
+                    render_bar_chart(table, "ПФ ТП, руб", "ПФ ТП, руб", "ПФ ТП, руб", get_quantile_colors(pf_tp_series, True), is_currency=True)
 
-                    render_bar_chart(
-                        table, 
-                        "Кол-во анкет на 1 RS, шт.", 
-                        "Кол-во анкет на 1 RS, шт.", 
-                        "Кол-во анкет на 1 RS, шт.", 
-                        ankets_color
-                    )
-
-    # -----------------------------------------------------------
-    # ПОДВКЛАДКА «РЕГИОНЫ» (заглушка)
-    # -----------------------------------------------------------
-    with rep_regions:
-        st.info("В разработке.")
-
-    # -----------------------------------------------------------
-    # ПОДВКЛАДКА «DSM» (заглушка)
-    # -----------------------------------------------------------
-    with rep_dsm:
-        st.info("В разработке.")
-
-    # -----------------------------------------------------------
-    # ПОДВКЛАДКА «СВОДНЫЙ» (заглушка)
-    # -----------------------------------------------------------
-    with rep_summary:
-        st.info("В разработке.")
+    with rep_regions: st.info("В разработке.")
+    with rep_dsm: st.info("В разработке.")
+    with rep_summary: st.info("В разработке.")
 
 
 # ---------------------------------------------------------------
@@ -1135,25 +1184,17 @@ with tab_reports:
 with tab_settings:
     st.header("Настройки проекта")
     st.caption(
-        "Конвертация Excel (ЗП + Хвосты) → Parquet. "
+        "Конвертация Excel (ЗП + Хвосты) и обогащение БДР → Parquet. "
         "Выполняется раз в месяц, результат сохраняется локально."
     )
 
-    zp_file = st.file_uploader(
-        "Файл ЗП (вкладки в формате ММГГ, например 0125)",
-        type=["xlsx", "xlsm"],
-        key="settings_zp",
-    )
-    hvosty_file = st.file_uploader(
-        "Файл Хвосты (вкладки в формате 'Хвосты 09.2026')",
-        type=["xlsx", "xlsm"],
-        key="settings_hvosty",
-    )
+    zp_file = st.file_uploader("Файл ЗП (вкладки в формате ММГГ, например 0125)", type=["xlsx", "xlsm"], key="settings_zp")
+    hvosty_file = st.file_uploader("Файл Хвосты (вкладки в формате 'Хвосты 09.2026')", type=["xlsx", "xlsm"], key="settings_hvosty")
+    bdr_file = st.file_uploader("Файл БДР (Excel, для колонок План ТП, Факт ТП, ПФ ТП)", type=["xlsx", "xlsm"], key="settings_bdr")
 
-    if zp_file is not None:
-        st.session_state.convert["zp_bytes"] = zp_file.getvalue()
-    if hvosty_file is not None:
-        st.session_state.convert["hvosty_bytes"] = hvosty_file.getvalue()
+    if zp_file is not None: st.session_state.convert["zp_bytes"] = zp_file.getvalue()
+    if hvosty_file is not None: st.session_state.convert["hvosty_bytes"] = hvosty_file.getvalue()
+    if bdr_file is not None: st.session_state.convert["bdr_bytes"] = bdr_file.getvalue()
 
     if st.button("Конвертировать в Parquet", type="primary"):
         conv = st.session_state.convert
@@ -1166,17 +1207,13 @@ with tab_settings:
 
             try:
                 if conv["zp_bytes"] is not None:
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=".xlsx"
-                    ) as tmp:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
                         tmp.write(conv["zp_bytes"])
                         zp_path = tmp.name
                         tmp_paths.append(zp_path)
 
                 if conv["hvosty_bytes"] is not None:
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=".xlsx"
-                    ) as tmp:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
                         tmp.write(conv["hvosty_bytes"])
                         hvosty_path = tmp.name
                         tmp_paths.append(hvosty_path)
@@ -1184,17 +1221,13 @@ with tab_settings:
                 progress = st.progress(0.0, text="Читаю вкладки…")
 
                 def _cb(i, total, sheet_name, file_type):
-                    progress.progress(
-                        min(i / total, 1.0),
-                        text=f"[{file_type}] {i}/{total}: {sheet_name}",
-                    )
+                    progress.progress(min(i / total, 1.0), text=f"[{file_type}] {i}/{total}: {sheet_name}")
 
                 try:
                     with st.spinner("Конвертирую…"):
                         stats = convert_to_parquet(
-                            zp_path, hvosty_path, PARQUET_PATH,
-                            st.session_state.aliases["zp"],
-                            st.session_state.aliases["hvosty"],
+                            zp_path, hvosty_path, conv["bdr_bytes"], PARQUET_PATH,
+                            st.session_state.aliases["zp"], st.session_state.aliases["hvosty"],
                             progress_callback=_cb,
                         )
                 except ValueError as e:
@@ -1208,48 +1241,27 @@ with tab_settings:
 
                 if stats["bad_dates"] > 0:
                     buffer = io.BytesIO()
-                    with pd.ExcelWriter(
-                        buffer, engine="openpyxl"
-                    ) as writer:
-                        stats["error_report"].to_excel(
-                            writer, index=False, sheet_name="BadDates"
-                        )
+                    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                        stats["error_report"].to_excel(writer, index=False, sheet_name="BadDates")
                     conv["bad_dates_bytes"] = buffer.getvalue()
                 else:
                     conv["bad_dates_bytes"] = None
 
-                if (
-                    stats["hvosty_included_names"]
-                    or stats["hvosty_excluded_names"]
-                ):
+                if stats["hvosty_included_names"] or stats["hvosty_excluded_names"]:
                     sheets_buffer = io.BytesIO()
-                    with pd.ExcelWriter(
-                        sheets_buffer, engine="openpyxl"
-                    ) as writer:
+                    with pd.ExcelWriter(sheets_buffer, engine="openpyxl") as writer:
                         if stats["hvosty_included_names"]:
-                            pd.DataFrame({
-                                "Хвосты добавлены":
-                                    stats["hvosty_included_names"],
-                            }).to_excel(
-                                writer, index=False, sheet_name="Included"
-                            )
+                            pd.DataFrame({"Хвосты добавлены": stats["hvosty_included_names"]}).to_excel(writer, index=False, sheet_name="Included")
                         if stats["hvosty_excluded_names"]:
-                            pd.DataFrame({
-                                "Вкладки Хвост исключены":
-                                    stats["hvosty_excluded_names"],
-                            }).to_excel(
-                                writer, index=False, sheet_name="Excluded"
-                            )
+                            pd.DataFrame({"Вкладки Хвост исключены": stats["hvosty_excluded_names"]}).to_excel(writer, index=False, sheet_name="Excluded")
                     conv["sheets_bytes"] = sheets_buffer.getvalue()
                 else:
                     conv["sheets_bytes"] = None
 
             finally:
                 for p in tmp_paths:
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
+                    try: os.unlink(p)
+                    except OSError: pass
 
     conv = st.session_state.convert
     if conv["stats"] is not None:
@@ -1258,39 +1270,15 @@ with tab_settings:
         st.success("Готово!")
         col1, col2, col3 = st.columns(3)
         col1.metric("Строк", f"{stats['rows']:,}")
-        col2.metric(
-            "Вкладок обработано",
-            f"{stats['sheets_used']} / {stats['sheets_total']}",
-        )
-        col3.metric(
-            "Размер Parquet, МБ",
-            f"{stats['parquet_size_mb']:.2f}",
-        )
+        col2.metric("Вкладок обработано", f"{stats['sheets_used']} / {stats['sheets_total']}")
+        col3.metric("Размер Parquet, МБ", f"{stats['parquet_size_mb']:.2f}")
 
         if conv["parquet_bytes"]:
-            st.download_button(
-                "Скачать Parquet",
-                data=conv["parquet_bytes"],
-                file_name="report_data.parquet",
-                mime="application/octet-stream",
-            )
+            st.download_button("Скачать Parquet", data=conv["parquet_bytes"], file_name="report_data.parquet", mime="application/octet-stream")
 
         if conv["bad_dates_bytes"]:
-            st.warning(
-                f"Не распознано дат визита: {stats['bad_dates']}. "
-                "Скачайте отчёт ниже."
-            )
-            st.download_button(
-                "Скачать Excel с ошибками дат",
-                data=conv["bad_dates_bytes"],
-                file_name="bad_dates.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            st.warning(f"Не распознано дат визита: {stats['bad_dates']}. Скачайте отчёт ниже.")
+            st.download_button("Скачать Excel с ошибками дат", data=conv["bad_dates_bytes"], file_name="bad_dates.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         if conv["sheets_bytes"]:
-            st.download_button(
-                "Скачать Excel со списком вкладок Хвостов (Included/Excluded)",
-                data=conv["sheets_bytes"],
-                file_name="hvosty_sheets.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            st.download_button("Скачать Excel со списком вкладок Хвостов (Included/Excluded)", data=conv["sheets_bytes"], file_name="hvosty_sheets.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
