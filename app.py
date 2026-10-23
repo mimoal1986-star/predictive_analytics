@@ -618,7 +618,12 @@ def convert_to_parquet(
     if bdr_bytes:
         bdr_df = parse_bdr(bdr_bytes)
 
-    if not bdr_df.empty:
+    # Гарантированно создаем колонку, чтобы не было KeyError
+    if "План ТП, руб" not in combined.columns:
+        combined["План ТП, руб"] = pd.NA
+
+    # Делаем merge только если в bdr_df есть нужная колонка
+    if not bdr_df.empty and "План ТП, руб" in bdr_df.columns:
         combined["Код проекта"] = (
             combined["Код проекта"]
             .astype(str)
@@ -626,8 +631,6 @@ def convert_to_parquet(
             .replace(["nan", "<NA>", "None"], pd.NA)
         )
         combined = combined.merge(bdr_df, on="Код проекта", how="left")
-    else:
-        combined["План ТП, руб"] = pd.NA
 
     combined["План ТП, руб"] = pd.to_numeric(combined["План ТП, руб"], errors="coerce")
     combined["Факт ТП, руб"] = pd.to_numeric(combined["Факт ТП, руб"], errors="coerce")
