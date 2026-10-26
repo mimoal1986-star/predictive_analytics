@@ -26,7 +26,7 @@ REQUIRED_COLUMNS = [
     "Регион short",
     "Регион long",
     "RS",
-    "RS ID",
+    "ТП",
     "Дата визита",
     "План ТП, руб",
     "Факт ТП, руб",
@@ -205,7 +205,7 @@ DEFAULT_ZP_ALIASES = {
         "Re Чеккер", "РЕГИОН", "регион",
     ],
     "RS": ["Тайный покупатель Fullname", "RS"],
-    "RS ID": ["Тайный покупатель ID"],
+    "ТП": ["Тайный покупатель Fullname"],
     "ВСЕГО": ["ВСЕГО", "Всего", "Итого"],
     "Компенсация": ["Компенсация за покупку", "Компенсация"],
     "Бонус": ["Бонус", "Бонусы"],
@@ -219,7 +219,7 @@ DEFAULT_HVOSTY_ALIASES = {
     "Клиент": ["Проект", "Проекты"] + DEFAULT_ZP_ALIASES["Клиент"],
     "Регион short": ["Регион"] + DEFAULT_ZP_ALIASES["Регион short"],
     "RS": [],
-    "RS ID": [],
+    "ТП": [],
     "ВСЕГО": [],
     "Компенсация": [],
     "Бонус": [],
@@ -233,7 +233,7 @@ TARGET_LABELS = {
     "Клиент": "Клиент",
     "Регион short": "Регион short",
     "RS": "РС",
-    "RS ID": "RS ID",
+    "ТП": "ТП",
     "ВСЕГО": "ВСЕГО",
     "Компенсация": "Компенсация",
     "Бонус": "Бонус",
@@ -1003,7 +1003,7 @@ def convert_to_parquet(
 
     text_cols = [
         c for c in FINAL_COLUMNS
-        if c not in ("Год", "Месяц", "Дата визита", "RS ID", "План ТП, руб", "Факт ТП, руб", "ПФ ТП, руб", "Дата старта", "Дата финиша", "Длительность")
+        if c not in ("Год", "Месяц", "Дата визита", "План ТП, руб", "Факт ТП, руб", "ПФ ТП, руб", "Дата старта", "Дата финиша", "Длительность")
     ]
     for col in text_cols:
         combined[col] = (
@@ -1018,12 +1018,6 @@ def convert_to_parquet(
 
     for col in CATEGORICAL_COLUMNS:
         combined[col] = combined[col].astype("category")
-
-    rs_id = pd.to_numeric(combined["RS ID"], errors="coerce")
-    bad_rs = rs_id.notna() & (rs_id % 1 != 0)
-    if bad_rs.any():
-        st.warning(f"RS ID: {bad_rs.sum()} дробных значений — округлены")
-    combined["RS ID"] = rs_id.round().astype("Int64")
 
     combined.to_parquet(parquet_path, index=False, compression="zstd")
 
