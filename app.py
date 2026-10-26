@@ -204,7 +204,7 @@ DEFAULT_ZP_ALIASES = {
         "RegionName", "Re", "Регион", "RegionName Чек",
         "Re Чеккер", "РЕГИОН", "регион",
     ],
-    "RS": ["Тайный покупатель Fullname", "RS"],
+    "RS": ["ЭМ", "RS"],
     "ТП": ["Тайный покупатель Fullname", "Респондент"],
     "ВСЕГО": ["ВСЕГО", "Всего", "Итого"],
     "Компенсация": ["Компенсация за покупку", "Компенсация"],
@@ -477,7 +477,7 @@ def _parse_sheet(
     if missing:
         lines = [
             f"[{file_type}] Лист «{sheet_name}» "
-            f"{TARGET_LABELS[t]} = пусто: нет колонок ['{t}']"
+            f"{TARGET_LABELS.get(t, t)} = пусто: нет колонок ['{t}']"
             for t in missing
         ]
         st.warning("\n".join(lines))
